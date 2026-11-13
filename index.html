@@ -5,196 +5,238 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Leitor de Etiquetas</title>
   <!--
-    Versão para hospedar FORA do Apps Script (qualquer hospedagem HTTPS).
-    A página abre a câmera direto no navegador e envia as leituras para o
-    doPost do web app. A URL do web app e o token ficam salvos só no aparelho.
+    Leitor ao vivo (somente DataMatrix), hospedado no GitHub Pages.
+    Só grava depois de login com conta Google da empresa: o servidor confere
+    o login e devolve uma sessão; cada envio leva essa sessão.
+    Esta página não contém senha nem token: pode ficar em repositório público.
   -->
   <style>
     body { font-family: Arial, sans-serif; margin: 0; padding: 12px; background: #111; color: #eee; }
-    video { width: 100%; max-height: 55vh; background: #000; border-radius: 8px; object-fit: cover; }
-    #status { margin: 10px 0; padding: 10px; border-radius: 6px; background: #333; font-weight: bold; }
-    #status.ok { background: #1b6e2d; }
-    #status.aviso { background: #8a6d00; }
-    #status.erro { background: #8a1c1c; }
+    #telaLogin { text-align: center; padding: 40px 12px; }
+    #telaLogin h1 { font-size: 22px; }
+    #botaoGoogle { display: inline-block; margin: 20px 0; }
+    #telaLeitor { display: none; }
+    video { width: 100%; max-height: 50vh; background: #000; border-radius: 8px; object-fit: cover; }
+    .faixa { margin: 8px 0; padding: 10px; border-radius: 6px; background: #333; font-weight: bold; }
+    .faixa.ok { background: #1b6e2d; }
+    .faixa.aviso { background: #8a6d00; }
+    .faixa.erro { background: #8a1c1c; }
+    #envio { font-weight: normal; font-size: 13px; }
+    #placar { display: flex; gap: 8px; margin-bottom: 10px; }
+    #placar div { flex: 1; background: #222; border-radius: 6px; padding: 8px; text-align: center; font-size: 12px; }
+    #placar b { display: block; font-size: 24px; }
     ul { list-style: none; padding: 0; margin: 0 0 10px; font-size: 13px; word-break: break-all; }
     li { padding: 4px 0; border-bottom: 1px solid #333; }
-    li b { color: #8cf; }
-    button { font-size: 16px; padding: 12px 16px; margin: 0 8px 8px 0; border: 0; border-radius: 6px; }
-    #salvar, #gravarConfig { background: #2d7ff9; color: #fff; }
-    #contador { display: block; font-size: 14px; }
-    #config { display: none; background: #222; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
-    #config label { display: block; font-size: 13px; margin: 8px 0 4px; }
-    #config input { width: 100%; box-sizing: border-box; font-size: 15px; padding: 8px; }
+    button { font-size: 15px; padding: 10px 14px; margin: 0 8px 8px 0; border: 0; border-radius: 6px; }
+    #usuario { font-size: 12px; color: #aaa; }
   </style>
 </head>
 <body>
-  <div id="config">
-    <b>Configuração (fica salva neste aparelho)</b>
-    <label for="url">URL do web app (termina em /exec)</label>
-    <input id="url" type="url" placeholder="https://script.google.com/macros/s/.../exec">
-    <label for="token">Token (o mesmo do Code.gs)</label>
-    <input id="token" type="text" autocomplete="off">
-    <p><button id="gravarConfig">Gravar</button></p>
+  <div id="telaLogin">
+    <h1>Leitor de Etiquetas</h1>
+    <p>Entre com a sua conta da empresa para começar.</p>
+    <div id="botaoGoogle"></div>
+    <div id="msgLogin" class="faixa" style="display:none"></div>
   </div>
 
-  <video id="video" playsinline muted autoplay></video>
-  <div id="status">Iniciando…</div>
-  <ul id="lidos"></ul>
-  <button id="salvar">Salvar agora</button>
-  <button id="limpar">Limpar</button>
-  <button id="ligar">Ligar câmera</button>
-  <button id="abrirConfig">Configurar</button>
-  <span id="contador">0 etiquetas salvas</span>
+  <div id="telaLeitor">
+    <video id="video" playsinline muted autoplay></video>
+    <div id="status" class="faixa">Iniciando…</div>
+    <div id="envio" class="faixa">Gravação: aguardando leituras</div>
+    <div id="placar">
+      <div><b id="nLidas">0</b>etiquetas lidas</div>
+      <div><b id="nGravadas">0</b>gravadas</div>
+      <div><b id="nRepetidas">0</b>já na planilha</div>
+      <div><b id="nPendentes">0</b>na fila</div>
+    </div>
+    <ul id="ultimas"></ul>
+    <button id="ligar">Ligar câmera</button>
+    <button id="sair">Sair</button>
+    <div id="usuario"></div>
+  </div>
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-  const RE_RASTREIO = /^[A-Z]{2}\d{8,}$/;
-  const RE_CEP = /^\d{5}-?\d{3}$/;
-  const RE_CHAVE = /^\d{44}$/;
+  // ---------- Configuração: preencha antes de enviar ao GitHub (nenhum dos dois é segredo) ----------
+  const URL_WEBAPP = 'https://script.google.com/macros/s/AKfycbw9MoEZ8RRaC-t88asWYN1FhVd1e17T4ijc_1fBiyG9itdINwQ7oSDXMOVbfXrxpJ39/exec';
+  const CLIENT_ID = '832294514610-qkndmjqt960674241dhpt052s780lltv.apps.googleusercontent.com';
+  const DOMINIO = 'sbxgroup.com';
+
+  const INTERVALO_ENVIO_MS = 2000;   // envia a fila em lotes a cada 2 s
+  const TAMANHO_LOTE = 100;
+  const CHAVE_FILA = 'leitorFilaEtiquetas';
+  const CHAVE_SESSAO = 'leitorSessao';
 
   const video = document.getElementById('video');
   const elStatus = document.getElementById('status');
-  const elLidos = document.getElementById('lidos');
-  const elConfig = document.getElementById('config');
+  const elEnvio = document.getElementById('envio');
+  const elMsgLogin = document.getElementById('msgLogin');
 
-  let atual = new Map();        // códigos da etiqueta em leitura: valor -> formato
-  let rastreioAtual = null;
-  let ignorar = new Set();      // códigos da última etiqueta salva (ainda na frente da câmera)
-  const enviados = new Set();   // rastreios já salvos nesta sessão
-  let enviando = false, temporizador = null, salvas = 0;
+  const brutosVistos = new Set();    // conteúdos já enfileirados (cada variante é enviada uma vez)
+  const codigosVistos = new Set();   // etiquetas já contadas (sem o prefixo "5.")
+  let fila = [];
+  let sessao = null;                 // {sessao, email, expira}
+  let enviando = false, lidas = 0, gravadas = 0, repetidas = 0, lacoAtivo = false, audio = null;
 
-  function status(texto, classe) { elStatus.textContent = texto; elStatus.className = classe || ''; }
-
-  // ---------- Configuração ----------
-  function lerConfig() {
-    try { return JSON.parse(localStorage.getItem('leitorConfig')) || {}; } catch (e) { return {}; }
+  function status(texto, classe) { elStatus.textContent = texto; elStatus.className = 'faixa ' + (classe || ''); }
+  function envio(texto, classe) { elEnvio.textContent = texto; elEnvio.className = 'faixa ' + (classe || ''); }
+  function msgLogin(texto, classe) {
+    elMsgLogin.style.display = texto ? 'block' : 'none';
+    elMsgLogin.textContent = texto; elMsgLogin.className = 'faixa ' + (classe || '');
   }
-  function mostrarConfig() {
-    const c = lerConfig();
-    document.getElementById('url').value = c.url || '';
-    document.getElementById('token').value = c.token || '';
-    elConfig.style.display = 'block';
+
+  async function chamar(corpo) {
+    // text/plain evita a verificação prévia (preflight) que o Apps Script não responde
+    const resp = await fetch(URL_WEBAPP, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(corpo)
+    });
+    return resp.json();
   }
-  document.getElementById('abrirConfig').onclick = mostrarConfig;
-  document.getElementById('gravarConfig').onclick = function () {
-    const c = { url: document.getElementById('url').value.trim(), token: document.getElementById('token').value.trim() };
-    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(c.url) || !c.token) {
-      status('Preencha a URL (terminando em /exec) e o token', 'erro'); return;
+
+  // ---------- Login ----------
+  function mostrarLeitor() {
+    document.getElementById('telaLogin').style.display = 'none';
+    document.getElementById('telaLeitor').style.display = 'block';
+    document.getElementById('usuario').textContent = 'Conectado como ' + sessao.email;
+    iniciar();
+  }
+
+  function mostrarLogin(mensagem) {
+    sessao = null;
+    try { localStorage.removeItem(CHAVE_SESSAO); } catch (e) {}
+    document.getElementById('telaLeitor').style.display = 'none';
+    document.getElementById('telaLogin').style.display = 'block';
+    msgLogin(mensagem || '', mensagem ? 'aviso' : '');
+  }
+
+  async function aoEntrarComGoogle(resposta) {
+    try {
+      msgLogin('Conferindo o login…', '');
+      const r = await chamar({ acao: 'entrar', idToken: resposta.credential });
+      if (r.status !== 'ok') { msgLogin('Não foi possível entrar: ' + (r.mensagem || 'erro'), 'erro'); return; }
+      sessao = { sessao: r.sessao, email: r.email, expira: r.expira };
+      try { localStorage.setItem(CHAVE_SESSAO, JSON.stringify(sessao)); } catch (e) {}
+      msgLogin('', '');
+      mostrarLeitor();
+    } catch (e) {
+      msgLogin('Falha ao falar com a planilha: ' + e.message, 'erro');
     }
-    try { localStorage.setItem('leitorConfig', JSON.stringify(c)); } catch (e) {}
-    elConfig.style.display = 'none';
-    status('Configuração gravada', 'ok');
+  }
+
+  function prepararLogin() {
+    if (!window.google || !google.accounts || !google.accounts.id) { setTimeout(prepararLogin, 200); return; }
+    google.accounts.id.initialize({ client_id: CLIENT_ID, callback: aoEntrarComGoogle, hd: DOMINIO, auto_select: true });
+    google.accounts.id.renderButton(document.getElementById('botaoGoogle'), { theme: 'filled_blue', size: 'large', text: 'signin_with' });
+  }
+
+  document.getElementById('sair').onclick = function () {
+    try { google.accounts.id.disableAutoSelect(); } catch (e) {}
+    mostrarLogin('Você saiu. As leituras que estavam na fila continuam guardadas neste aparelho.');
   };
 
   // ---------- Leitura ----------
-  function tipo(valor) {
-    if (RE_CHAVE.test(valor)) return 'Chave NF-e';
-    if (RE_RASTREIO.test(valor)) return 'Rastreio';
-    if (RE_CEP.test(valor)) return 'CEP';
-    return 'DataMatrix/Outro';
+  /** "5.CB23263360" -> "CB23263360" */
+  function codigoDe(valor) {
+    const m = /^\d+\.(.+)$/.exec(valor);
+    return m ? m[1] : valor;
   }
 
-  function desenhar() {
-    elLidos.innerHTML = '';
-    atual.forEach(function (formato, valor) {
-      const li = document.createElement('li');
-      const b = document.createElement('b');
-      b.textContent = tipo(valor) + ': ';
-      li.appendChild(b);
-      li.appendChild(document.createTextNode(valor));
-      elLidos.appendChild(li);
-    });
+  // A fila fica guardada no aparelho: recarregar a página recupera o que não foi gravado
+  function carregarFila() {
+    try { fila = JSON.parse(localStorage.getItem(CHAVE_FILA)) || []; } catch (e) { fila = []; }
+    fila.forEach(function (l) { brutosVistos.add(l.valor); codigosVistos.add(codigoDe(l.valor)); });
+  }
+  function guardarFila() {
+    try { localStorage.setItem(CHAVE_FILA, JSON.stringify(fila)); } catch (e) {}
   }
 
-  /** Recebe os códigos detectados em um quadro: [{valor, formato}] */
-  function processar(codigos) {
-    if (enviando) return;
-    // Rastreio primeiro: é ele que indica troca de etiqueta
-    codigos.sort(function (a, b) { return RE_RASTREIO.test(b.valor) - RE_RASTREIO.test(a.valor); });
-    let mudou = false;
-    codigos.forEach(function (c) {
-      const valor = String(c.valor || '').trim();
-      if (!valor) return;
-      if (RE_RASTREIO.test(valor)) {
-        if (enviados.has(valor)) return;
-        if (valor !== rastreioAtual) { atual.clear(); ignorar.clear(); rastreioAtual = valor; mudou = true; }
-      }
-      if (ignorar.has(valor) || atual.has(valor)) return;
-      atual.set(valor, c.formato);
-      mudou = true;
-    });
-    if (!mudou) return;
-    desenhar();
-    const temChave = Array.from(atual.keys()).some(function (v) { return RE_CHAVE.test(v); });
-    if (rastreioAtual && temChave) {
-      status('Etiqueta completa, salvando…', 'aviso');
-      clearTimeout(temporizador);
-      temporizador = setTimeout(enviar, 800);
-    } else {
-      status('Lendo… faltam: ' + (rastreioAtual ? '' : 'rastreio ') + (temChave ? '' : 'chave NF-e'), '');
-    }
-  }
-
-  async function enviar() {
-    clearTimeout(temporizador);
-    if (enviando || atual.size === 0) return;
-    const cfg = lerConfig();
-    if (!cfg.url || !cfg.token) { mostrarConfig(); status('Configure a URL e o token antes de salvar', 'erro'); return; }
-    enviando = true;
-    const lista = Array.from(atual, function (par) { return { valor: par[0], formato: par[1] }; });
-    try {
-      // text/plain evita a verificação prévia (preflight) que o Apps Script não responde
-      const resp = await fetch(cfg.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ token: cfg.token, codigos: lista, origem: 'Celular' })
-      });
-      const r = await resp.json();
-      if (r.status === 'erro') { status('Planilha recusou: ' + r.mensagem, 'erro'); return; }
-      if (r.status === 'ok') { salvas++; status('Salvo: ' + r.rastreio + ' (linha ' + r.linha + ')', 'ok'); bip(880); }
-      else if (r.status === 'duplicado') { status('Já estava na planilha: ' + r.rastreio + ' (linha ' + r.linha + ')', 'aviso'); bip(300); }
-      else { status('Nada para salvar', 'aviso'); }
-      if (rastreioAtual) enviados.add(rastreioAtual);
-      ignorar = new Set(atual.keys());
-      atual.clear(); rastreioAtual = null; desenhar();
-      document.getElementById('contador').textContent = salvas + ' etiquetas salvas';
-    } catch (e) {
-      status('Erro ao salvar: ' + e.message + ' — confira a URL e se o web app está com acesso "Qualquer pessoa"', 'erro');
-    } finally {
-      enviando = false;
-    }
+  function placar() {
+    document.getElementById('nLidas').textContent = lidas;
+    document.getElementById('nGravadas').textContent = gravadas;
+    document.getElementById('nRepetidas').textContent = repetidas;
+    document.getElementById('nPendentes').textContent = fila.length;
   }
 
   function bip(freq) {
     try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const o = ctx.createOscillator();
-      o.frequency.value = freq; o.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.15);
-      if (navigator.vibrate) navigator.vibrate(100);
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audio.createOscillator();
+      o.frequency.value = freq; o.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.1);
     } catch (e) {}
   }
 
-  document.getElementById('salvar').onclick = enviar;
-  document.getElementById('limpar').onclick = function () {
-    atual.clear(); ignorar.clear(); rastreioAtual = null; desenhar(); status('Aponte para a etiqueta', '');
-  };
+  function aoLer(valor) {
+    valor = String(valor || '').trim();
+    if (!valor || brutosVistos.has(valor)) return;
+    brutosVistos.add(valor);
+    fila.push({ valor: valor, lidoEm: new Date().toISOString() });
+    guardarFila();
+
+    const codigo = codigoDe(valor);
+    if (!codigosVistos.has(codigo)) {      // etiqueta nova (o segundo DataMatrix dela não conta de novo)
+      codigosVistos.add(codigo);
+      lidas++;
+      bip(880);
+      const lista = document.getElementById('ultimas');
+      const li = document.createElement('li');
+      li.textContent = codigo;
+      lista.insertBefore(li, lista.firstChild);
+      while (lista.children.length > 8) lista.removeChild(lista.lastChild);
+      status('Lido: ' + codigo, 'ok');
+    }
+    placar();
+  }
+
+  // ---------- Gravação em lotes ----------
+  async function enviarFila() {
+    if (enviando || !fila.length || !sessao) return;
+    enviando = true;
+    const lote = fila.slice(0, TAMANHO_LOTE);
+    try {
+      const r = await chamar({ acao: 'gravar', sessao: sessao.sessao, codigos: lote });
+      if (r.status === 'sessao') { mostrarLogin('Sua sessão venceu. Entre de novo para continuar gravando.'); return; }
+      if (r.status !== 'ok') { envio('Planilha recusou: ' + (r.mensagem || 'resposta inesperada'), 'erro'); return; }
+      const enviados = new Set(lote.map(function (l) { return l.valor; }));
+      fila = fila.filter(function (l) { return !enviados.has(l.valor); });
+      guardarFila();
+      gravadas += r.gravadas; repetidas += r.duplicadas;
+      placar();
+      envio('Último envio: ' + r.gravadas + ' gravadas, ' + r.duplicadas + ' já na planilha (' +
+        new Date().toLocaleTimeString() + ')', '');
+    } catch (e) {
+      // Fica na fila e tenta de novo no próximo ciclo
+      envio('Sem gravar (' + e.message + '). ' + fila.length + ' na fila, tentando de novo…', 'erro');
+    } finally {
+      enviando = false;
+    }
+  }
+  setInterval(enviarFila, INTERVALO_ENVIO_MS);
 
   // ---------- Câmera ----------
   const CAMERA = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
-  let lacoAtivo = false;
 
-  async function iniciarNativo() {
-    const detector = new BarcodeDetector({ formats: ['data_matrix', 'code_128'] });
-    video.srcObject = await navigator.mediaDevices.getUserMedia(CAMERA);
+  function manterTelaLigada() {
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(function () {}); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && lacoAtivo) manterTelaLigada();
+  });
+
+  async function iniciarNativo(fluxo) {
+    const detector = new BarcodeDetector({ formats: ['data_matrix'] });
+    video.srcObject = fluxo;
     await video.play();
-    status('Aponte para a etiqueta', '');
+    status('Aponte para o DataMatrix', '');
     if (lacoAtivo) return;
     lacoAtivo = true;
     (async function laco() {
       try {
         const achados = await detector.detect(video);
-        if (achados.length) processar(achados.map(function (a) { return { valor: a.rawValue, formato: a.format }; }));
+        achados.forEach(function (a) { aoLer(a.rawValue); });
       } catch (e) {}
-      setTimeout(laco, 150);
+      setTimeout(laco, 30);   // lê o mais rápido que o aparelho permitir
     })();
   }
 
@@ -205,16 +247,17 @@
     });
   }
 
-  // Reserva para navegadores sem BarcodeDetector (ex.: iPhone, Chrome no Windows): biblioteca ZXing
-  async function iniciarZXing() {
+  // Reserva para navegadores sem BarcodeDetector (ex.: iPhone, Chrome no Windows)
+  async function iniciarZXing(fluxo) {
     if (!window.ZXing) await carregarScript('https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js');
     const dicas = new Map();
-    dicas.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.CODE_128]);
+    dicas.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.DATA_MATRIX]);
     const leitor = new ZXing.BrowserMultiFormatReader(dicas);
-    await leitor.decodeFromConstraints(CAMERA, video, function (resultado) {
-      if (resultado) processar([{ valor: resultado.getText(), formato: ZXing.BarcodeFormat[resultado.getBarcodeFormat()] }]);
+    await leitor.decodeFromStream(fluxo, video, function (resultado) {
+      if (resultado) aoLer(resultado.getText());
     });
-    status('Aponte para a etiqueta (modo compatibilidade: um código por vez)', '');
+    lacoAtivo = true;
+    status('Aponte para o DataMatrix (modo compatibilidade, mais lento)', '');
   }
 
   const DICAS = {
@@ -225,17 +268,21 @@
   };
 
   async function iniciar() {
-    let modo = 'início';
+    if (lacoAtivo) return;
+    let modo = 'pedido da câmera';
     try {
       if (!navigator.mediaDevices) throw new Error('esta página precisa ser aberta por HTTPS');
       status('Iniciando câmera…', '');
+      const fluxo = await navigator.mediaDevices.getUserMedia(CAMERA);
       let nativo = false;
       if ('BarcodeDetector' in window) {
         const formatos = await BarcodeDetector.getSupportedFormats();
-        nativo = formatos.indexOf('data_matrix') !== -1 && formatos.indexOf('code_128') !== -1;
+        nativo = formatos.indexOf('data_matrix') !== -1;
       }
       modo = nativo ? 'nativo' : 'ZXing';
-      if (nativo) await iniciarNativo(); else await iniciarZXing();
+      if (nativo) await iniciarNativo(fluxo); else await iniciarZXing(fluxo);
+      document.getElementById('ligar').style.display = 'none';
+      manterTelaLigada();
     } catch (e) {
       const nome = (e && e.name) || 'Erro';
       status('Câmera não abriu [' + nome + ' / modo ' + modo + ']: ' +
@@ -244,8 +291,16 @@
   }
   document.getElementById('ligar').onclick = iniciar;
 
-  if (!lerConfig().url) mostrarConfig();
-  iniciar();
+  // ---------- Início ----------
+  carregarFila();
+  placar();
+  try { sessao = JSON.parse(localStorage.getItem(CHAVE_SESSAO)); } catch (e) { sessao = null; }
+  if (sessao && sessao.sessao && sessao.expira > Date.now()) {
+    mostrarLeitor();
+  } else {
+    sessao = null;
+  }
+  prepararLogin();
 </script>
 </body>
 </html>
