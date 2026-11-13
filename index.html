@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leitor de Etiquetas</title>
+  <!--
+    Versão para hospedar FORA do Apps Script (qualquer hospedagem HTTPS).
+    A página abre a câmera direto no navegador e envia as leituras para o
+    doPost do web app. A URL do web app e o token ficam salvos só no aparelho.
+  -->
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 12px; background: #111; color: #eee; }
+    video { width: 100%; max-height: 55vh; background: #000; border-radius: 8px; object-fit: cover; }
+    #status { margin: 10px 0; padding: 10px; border-radius: 6px; background: #333; font-weight: bold; }
+    #status.ok { background: #1b6e2d; }
+    #status.aviso { background: #8a6d00; }
+    #status.erro { background: #8a1c1c; }
+    ul { list-style: none; padding: 0; margin: 0 0 10px; font-size: 13px; word-break: break-all; }
+    li { padding: 4px 0; border-bottom: 1px solid #333; }
+    li b { color: #8cf; }
+    button { font-size: 16px; padding: 12px 16px; margin: 0 8px 8px 0; border: 0; border-radius: 6px; }
+    #salvar, #gravarConfig { background: #2d7ff9; color: #fff; }
+    #contador { display: block; font-size: 14px; }
+    #config { display: none; background: #222; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+    #config label { display: block; font-size: 13px; margin: 8px 0 4px; }
+    #config input { width: 100%; box-sizing: border-box; font-size: 15px; padding: 8px; }
+  </style>
+</head>
+<body>
+  <div id="config">
+    <b>Configuração (fica salva neste aparelho)</b>
+    <label for="url">URL do web app (termina em /exec)</label>
+    <input id="url" type="url" placeholder="https://script.google.com/macros/s/.../exec">
+    <label for="token">Token (o mesmo do Code.gs)</label>
+    <input id="token" type="text" autocomplete="off">
+    <p><button id="gravarConfig">Gravar</button></p>
+  </div>
+
+  <video id="video" playsinline muted autoplay></video>
+  <div id="status">Iniciando…</div>
+  <ul id="lidos"></ul>
+  <button id="salvar">Salvar agora</button>
+  <button id="limpar">Limpar</button>
+  <button id="ligar">Ligar câmera</button>
+  <button id="abrirConfig">Configurar</button>
+  <span id="contador">0 etiquetas salvas</span>
+
+<script>
+  const RE_RASTREIO = /^[A-Z]{2}\d{8,}$/;
+  const RE_CEP = /^\d{5}-?\d{3}$/;
+  const RE_CHAVE = /^\d{44}$/;
+
+  const video = document.getElementById('video');
+  const elStatus = document.getElementById('status');
+  const elLidos = document.getElementById('lidos');
+  const elConfig = document.getElementById('config');
+
+  let atual = new Map();        // códigos da etiqueta em leitura: valor -> formato
+  let rastreioAtual = null;
+  let ignorar = new Set();      // códigos da última etiqueta salva (ainda na frente da câmera)
+  const enviados = new Set();   // rastreios já salvos nesta sessão
+  let enviando = false, temporizador = null, salvas = 0;
+
+  function status(texto, classe) { elStatus.textContent = texto; elStatus.className = classe || ''; }
+
+  // ---------- Configuração ----------
+  function lerConfig() {
+    try { return JSON.parse(localStorage.getItem('leitorConfig')) || {}; } catch (e) { return {}; }
+  }
+  function mostrarConfig() {
+    const c = lerConfig();
+    document.getElementById('url').value = c.url || '';
+    document.getElementById('token').value = c.token || '';
+    elConfig.style.display = 'block';
+  }
+  document.getElementById('abrirConfig').onclick = mostrarConfig;
+  document.getElementById('gravarConfig').onclick = function () {
+    const c = { url: document.getElementById('url').value.trim(), token: document.getElementById('token').value.trim() };
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(c.url) || !c.token) {
+      status('Preencha a URL (terminando em /exec) e o token', 'erro'); return;
+    }
+    try { localStorage.setItem('leitorConfig', JSON.stringify(c)); } catch (e) {}
+    elConfig.style.display = 'none';
+    status('Configuração gravada', 'ok');
+  };
+
+  // ---------- Leitura ----------
+  function tipo(valor) {
+    if (RE_CHAVE.test(valor)) return 'Chave NF-e';
+    if (RE_RASTREIO.test(valor)) return 'Rastreio';
+    if (RE_CEP.test(valor)) return 'CEP';
+    return 'DataMatrix/Outro';
+  }
+
+  function desenhar() {
+    elLidos.innerHTML = '';
+    atual.forEach(function (formato, valor) {
+      const li = document.createElement('li');
+      const b = document.createElement('b');
+      b.textContent = tipo(valor) + ': ';
+      li.appendChild(b);
+      li.appendChild(document.createTextNode(valor));
+      elLidos.appendChild(li);
+    });
+  }
+
+  /** Recebe os códigos detectados em um quadro: [{valor, formato}] */
+  function processar(codigos) {
+    if (enviando) return;
+    // Rastreio primeiro: é ele que indica troca de etiqueta
+    codigos.sort(function (a, b) { return RE_RASTREIO.test(b.valor) - RE_RASTREIO.test(a.valor); });
+    let mudou = false;
+    codigos.forEach(function (c) {
+      const valor = String(c.valor || '').trim();
+      if (!valor) return;
+      if (RE_RASTREIO.test(valor)) {
+        if (enviados.has(valor)) return;
+        if (valor !== rastreioAtual) { atual.clear(); ignorar.clear(); rastreioAtual = valor; mudou = true; }
+      }
+      if (ignorar.has(valor) || atual.has(valor)) return;
+      atual.set(valor, c.formato);
+      mudou = true;
+    });
+    if (!mudou) return;
+    desenhar();
+    const temChave = Array.from(atual.keys()).some(function (v) { return RE_CHAVE.test(v); });
+    if (rastreioAtual && temChave) {
+      status('Etiqueta completa, salvando…', 'aviso');
+      clearTimeout(temporizador);
+      temporizador = setTimeout(enviar, 800);
+    } else {
+      status('Lendo… faltam: ' + (rastreioAtual ? '' : 'rastreio ') + (temChave ? '' : 'chave NF-e'), '');
+    }
+  }
+
+  async function enviar() {
+    clearTimeout(temporizador);
+    if (enviando || atual.size === 0) return;
+    const cfg = lerConfig();
+    if (!cfg.url || !cfg.token) { mostrarConfig(); status('Configure a URL e o token antes de salvar', 'erro'); return; }
+    enviando = true;
+    const lista = Array.from(atual, function (par) { return { valor: par[0], formato: par[1] }; });
+    try {
+      // text/plain evita a verificação prévia (preflight) que o Apps Script não responde
+      const resp = await fetch(cfg.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ token: cfg.token, codigos: lista, origem: 'Celular' })
+      });
+      const r = await resp.json();
+      if (r.status === 'erro') { status('Planilha recusou: ' + r.mensagem, 'erro'); return; }
+      if (r.status === 'ok') { salvas++; status('Salvo: ' + r.rastreio + ' (linha ' + r.linha + ')', 'ok'); bip(880); }
+      else if (r.status === 'duplicado') { status('Já estava na planilha: ' + r.rastreio + ' (linha ' + r.linha + ')', 'aviso'); bip(300); }
+      else { status('Nada para salvar', 'aviso'); }
+      if (rastreioAtual) enviados.add(rastreioAtual);
+      ignorar = new Set(atual.keys());
+      atual.clear(); rastreioAtual = null; desenhar();
+      document.getElementById('contador').textContent = salvas + ' etiquetas salvas';
+    } catch (e) {
+      status('Erro ao salvar: ' + e.message + ' — confira a URL e se o web app está com acesso "Qualquer pessoa"', 'erro');
+    } finally {
+      enviando = false;
+    }
+  }
+
+  function bip(freq) {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      o.frequency.value = freq; o.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.15);
+      if (navigator.vibrate) navigator.vibrate(100);
+    } catch (e) {}
+  }
+
+  document.getElementById('salvar').onclick = enviar;
+  document.getElementById('limpar').onclick = function () {
+    atual.clear(); ignorar.clear(); rastreioAtual = null; desenhar(); status('Aponte para a etiqueta', '');
+  };
+
+  // ---------- Câmera ----------
+  const CAMERA = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
+  let lacoAtivo = false;
+
+  async function iniciarNativo() {
+    const detector = new BarcodeDetector({ formats: ['data_matrix', 'code_128'] });
+    video.srcObject = await navigator.mediaDevices.getUserMedia(CAMERA);
+    await video.play();
+    status('Aponte para a etiqueta', '');
+    if (lacoAtivo) return;
+    lacoAtivo = true;
+    (async function laco() {
+      try {
+        const achados = await detector.detect(video);
+        if (achados.length) processar(achados.map(function (a) { return { valor: a.rawValue, formato: a.format }; }));
+      } catch (e) {}
+      setTimeout(laco, 150);
+    })();
+  }
+
+  function carregarScript(url) {
+    return new Promise(function (ok, falha) {
+      const s = document.createElement('script');
+      s.src = url; s.onload = ok; s.onerror = falha; document.head.appendChild(s);
+    });
+  }
+
+  // Reserva para navegadores sem BarcodeDetector (ex.: iPhone, Chrome no Windows): biblioteca ZXing
+  async function iniciarZXing() {
+    if (!window.ZXing) await carregarScript('https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js');
+    const dicas = new Map();
+    dicas.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.CODE_128]);
+    const leitor = new ZXing.BrowserMultiFormatReader(dicas);
+    await leitor.decodeFromConstraints(CAMERA, video, function (resultado) {
+      if (resultado) processar([{ valor: resultado.getText(), formato: ZXing.BarcodeFormat[resultado.getBarcodeFormat()] }]);
+    });
+    status('Aponte para a etiqueta (modo compatibilidade: um código por vez)', '');
+  }
+
+  const DICAS = {
+    NotAllowedError: 'permissão negada pelo navegador ou pelo sistema',
+    NotFoundError: 'nenhuma câmera encontrada neste aparelho',
+    NotReadableError: 'câmera em uso por outro programa',
+    OverconstrainedError: 'a câmera não atende à resolução pedida'
+  };
+
+  async function iniciar() {
+    let modo = 'início';
+    try {
+      if (!navigator.mediaDevices) throw new Error('esta página precisa ser aberta por HTTPS');
+      status('Iniciando câmera…', '');
+      let nativo = false;
+      if ('BarcodeDetector' in window) {
+        const formatos = await BarcodeDetector.getSupportedFormats();
+        nativo = formatos.indexOf('data_matrix') !== -1 && formatos.indexOf('code_128') !== -1;
+      }
+      modo = nativo ? 'nativo' : 'ZXing';
+      if (nativo) await iniciarNativo(); else await iniciarZXing();
+    } catch (e) {
+      const nome = (e && e.name) || 'Erro';
+      status('Câmera não abriu [' + nome + ' / modo ' + modo + ']: ' +
+        ((e && e.message) || e) + (DICAS[nome] ? ' — ' + DICAS[nome] : ''), 'erro');
+    }
+  }
+  document.getElementById('ligar').onclick = iniciar;
+
+  if (!lerConfig().url) mostrarConfig();
+  iniciar();
+</script>
+</body>
+</html>
