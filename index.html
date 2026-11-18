@@ -126,6 +126,16 @@
     .divisorOP { display: inline-block; margin: 12px 0 2px; padding: 6px 16px; border-radius: 999px; background: var(--azul); color: #fff; font: 700 15px 'Quicksand', sans-serif; }
     #faixaProduto { font: 700 28px 'Quicksand', sans-serif; text-align: center; }
     #esperaProduto { text-align: center; padding: 60px 18px; font-size: 20px; color: var(--texto-suave); }
+
+    /* Relatórios */
+    .filtros { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+    .filtros label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--texto-suave); text-transform: uppercase; letter-spacing: .04em; }
+    .filtros input, .filtros select { font: 500 16px 'Work Sans', sans-serif; padding: 8px 12px; border-radius: 13px; border: 1px solid var(--borda); color: var(--texto); background: #fff; }
+    .filtros input[type=text] { width: 200px; font-size: 16px; }
+    .filtros button { margin: 0; }
+    #relPlacar div b { font-size: 26px; }
+    td.num, th.num { text-align: right; }
+    tr.divergencia td { color: var(--vermelho); }
   </style>
 </head>
 <body>
@@ -134,6 +144,7 @@
     <div class="titulo">Conferência de Etiquetas</div>
     <span id="topoTexto"></span>
     <button id="hoje" title="Ver tudo que foi produzido hoje">Hoje: <b id="hojeQtd">0</b> kits</button>
+    <a id="relatorios">Relatórios</a>
     <a id="voltar">Outras OPs</a>
     <a id="trocar">Trocar de computador</a>
     <a id="sair">Sair</a>
@@ -246,6 +257,45 @@
     <button id="voltarOPs" data-icone="lista">Ver as OPs</button>
   </div>
 
+  <!-- Relatórios -->
+  <div id="telaRelatorio" class="tela">
+    <div style="display:flex; align-items:center; gap:12px">
+      <h1 style="flex:1; margin:0">Relatórios</h1>
+      <button id="relVoltar" style="margin:0">Voltar</button>
+    </div>
+    <div class="caixa filtros">
+      <label>De<input type="date" id="relDe"></label>
+      <label>Até<input type="date" id="relAte"></label>
+      <label>OPs<input type="text" id="relOPs" autocomplete="off" placeholder="todas"></label>
+      <label>Operador<select id="relUsuario"><option value="">Todos</option></select></label>
+      <label>Situação
+        <select id="relSituacao">
+          <option value="">Todas</option>
+          <option value="produzidas">Kits produzidos</option>
+          <option value="divergencias">Só divergências</option>
+          <option value="ok">OK</option>
+          <option value="fora">Fora de ordem</option>
+          <option value="tardia">Lida depois</option>
+          <option value="manual">Lançada manualmente</option>
+          <option value="repetida">Repetida</option>
+          <option value="desconhecida">De outra OP</option>
+        </select>
+      </label>
+      <button class="principal" id="relGerar">Gerar</button>
+    </div>
+    <div id="relMsg" class="faixa" style="display:none"></div>
+    <div id="relResultado" style="display:none">
+      <div class="placar" id="relPlacar"></div>
+      <button id="relBaixarDetalhe">Baixar leituras (Excel)</button>
+      <button id="relBaixarResumo">Baixar resumo por OP (Excel)</button>
+      <h2>Por dia</h2><table id="relDia"></table>
+      <h2>Por OP</h2><table id="relOP"></table>
+      <h2>Por operador</h2><table id="relOperador"></table>
+      <h2>Por hora do dia</h2><table id="relHora"></table>
+      <h2>Leituras</h2><div id="relNota" class="rotulo" style="margin-bottom:6px"></div><table id="relDetalhe"></table>
+    </div>
+  </div>
+
   </main>
 
   <!-- Janela: produção do dia ou reset -->
@@ -331,10 +381,12 @@
     if (texto !== undefined && texto !== null) e.textContent = texto;
     return e;
   }
-  const TELAS = ['telaLogin', 'telaPapel', 'telaOPs', 'telaInicio', 'telaConferencia', 'telaLeitura', 'telaProduto'];
+  const TELAS = ['telaLogin', 'telaPapel', 'telaOPs', 'telaInicio', 'telaConferencia', 'telaLeitura', 'telaProduto', 'telaRelatorio'];
   function mostrar(tela) {
     TELAS.forEach(function (t) { $(t).style.display = t === tela ? 'block' : 'none'; });
     const logado = tela !== 'telaLogin';
+    // Relatórios ficam fora das telas de leitura e de produtos, para não tirar a linha do ar sem querer
+    $('relatorios').style.display = ['telaPapel', 'telaInicio', 'telaOPs', 'telaConferencia'].indexOf(tela) !== -1 ? 'inline' : 'none';
     $('hoje').style.display = logado ? 'inline-flex' : 'none';
     $('sair').style.display = logado ? 'inline' : 'none';
     $('trocar').style.display = logado && tela !== 'telaPapel' ? 'inline' : 'none';
@@ -1231,8 +1283,8 @@
       const chips = el('div', 'chips');
       ordem.forEach(function (op) { chips.appendChild(el('span', '', 'OP ' + op + ': ' + porOP[op])); });
       corpo.appendChild(chips);
-      const baixar = el('button', '', 'Baixar planilha do dia (CSV)');
-      baixar.onclick = function () { baixarCsv(todas); };
+      const baixar = el('button', '', 'Baixar planilha do dia (Excel)');
+      baixar.onclick = function () { baixarArquivoCsv('leituras-' + dataHoje() + '.csv', CAB_DETALHE, linhasDetalhe(todas.slice().reverse())); };
       corpo.appendChild(baixar);
       const t = el('table'); t.style.marginTop = '12px';
       const cab = el('tr');
@@ -1248,17 +1300,187 @@
     } catch (e) { corpo.innerHTML = ''; corpo.appendChild(el('div', 'faixa erro', textoErro(e))); }
   };
 
-  /** Arquivo CSV (abre no Excel e no Google Planilhas) com todas as leituras do dia. */
-  function baixarCsv(linhas) {
-    const esc = function (v) { const s = String(v === undefined || v === null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const texto = ['Data;Hora;OP;Sequência;Código lido;Situação;Detalhe;Usuário'].concat(linhas.slice().reverse().map(function (r) {
-      return [new Date(r.t).toLocaleDateString(), hora(r.t), r.o, r.s, r.v, SITUACAO[r.tp] || r.tp, r.d, r.u].map(esc).join(';');
-    })).join('\r\n');
+  /**
+   * Arquivo CSV separado por ";" (abre direto no Excel em português e no Google Planilhas).
+   * Valores marcados com {texto} são forçados como texto, para códigos longos não virarem 8,88E+14.
+   */
+  function baixarArquivoCsv(nome, cabecalho, linhas) {
+    const esc = function (v) {
+      let s = v && typeof v === 'object' && 'texto' in v ? '="' + v.texto + '"' : String(v === undefined || v === null ? '' : v);
+      return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const texto = [cabecalho.map(esc).join(';')].concat(linhas.map(function (l) { return l.map(esc).join(';'); })).join('\r\n');
     const url = URL.createObjectURL(new Blob(['﻿' + texto], { type: 'text/csv;charset=utf-8' }));
-    const a = el('a'); a.href = url; a.download = 'leituras-' + dataHoje() + '.csv';
+    const a = el('a'); a.href = url; a.download = nome;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
   }
+  const CAB_DETALHE = ['Data', 'Hora', 'OP', 'Sequência', 'Código lido', 'Situação', 'Detalhe', 'Usuário'];
+  function linhasDetalhe(registros) {
+    return registros.map(function (r) {
+      return [new Date(r.t).toLocaleDateString(), hora(r.t), r.o, r.s, { texto: String(r.v || '') }, SITUACAO[r.tp] || r.tp, r.d, r.u];
+    });
+  }
+
+  // ---------- Relatórios ----------
+  let relLinhas = [], relPorOP = [];
+
+  $('relatorios').onclick = function () {
+    modo = null; S = null; pararPC2();
+    if (!$('relDe').value) { $('relDe').value = dataHoje(); $('relAte').value = dataHoje(); }
+    mostrar('telaRelatorio');
+    $('topoTexto').textContent = 'Relatórios';
+  };
+  $('relVoltar').onclick = function () {
+    const papel = lerLocal('papel', null);
+    definirPapel(papel === 'pc1' || papel === 'pc2' ? papel : null);
+  };
+  $('relGerar').onclick = function () { this.blur(); gerarRelatorio(); };
+  $('relUsuario').onchange = $('relSituacao').onchange = function () { if (relTodas.length) filtrarRelatorio(); };
+
+  let relTodas = [];   // leituras do período (antes dos filtros de operador e situação)
+
+  /**
+   * Busca as leituras do período. Lê só as OPs gravadas a partir da data inicial
+   * (ou só as OPs digitadas): um mês inteiro custa por volta de mil leituras no Firebase.
+   */
+  async function gerarRelatorio() {
+    const de = $('relDe').value, ate = $('relAte').value;
+    if (!de || !ate) { faixa('relMsg', 'Escolha as datas.', 'aviso'); return; }
+    const ini = new Date(de + 'T00:00:00').getTime();
+    const fim = new Date(ate + 'T00:00:00').getTime() + 86400000;
+    if (fim <= ini) { faixa('relMsg', 'A data final é antes da inicial.', 'aviso'); return; }
+    faixa('relMsg', 'Carregando…', '');
+    $('relGerar').disabled = true;
+    try {
+      const ops = $('relOPs').value.split(/[,;\s]+/).map(function (t) { return t.trim(); }).filter(Boolean).map(idOP);
+      let docs;
+      if (ops.length) {
+        const s = await Promise.all(ops.map(function (op) { return getDoc(refMarcas(op)); }));
+        docs = s.filter(function (d) { return d.exists(); }).map(function (d) { return d.data(); });
+      } else {
+        const s = await getDocs(query(collection(db, 'marcas'), where('ult', '>=', ini)));
+        docs = s.docs.map(function (d) { return d.data(); });
+      }
+      relTodas = [];
+      docs.forEach(function (d) { (d.log || []).forEach(function (r) { if (r.t >= ini && r.t < fim) relTodas.push(r); }); });
+      relTodas.sort(function (a, b) { return a.t - b.t; });
+
+      // Operadores do período no filtro (mantém a escolha atual, se ainda existir)
+      const atual = $('relUsuario').value;
+      const usuarios = Array.from(new Set(relTodas.map(function (r) { return r.u; }))).sort();
+      const sel = $('relUsuario'); sel.innerHTML = '';
+      sel.appendChild(el('option', '', 'Todos')).value = '';
+      usuarios.forEach(function (u) { const o = el('option', '', u); o.value = u; sel.appendChild(o); });
+      sel.value = usuarios.indexOf(atual) !== -1 ? atual : '';
+
+      faixa('relMsg', relTodas.length ? '' : 'Nenhuma leitura nesse período.', relTodas.length ? '' : 'aviso');
+      filtrarRelatorio();
+    } catch (e) {
+      faixa('relMsg', 'Não consegui gerar: ' + textoErro(e), 'erro');
+    } finally {
+      $('relGerar').disabled = false;
+    }
+  }
+
+  function passaSituacao(r, sit) {
+    if (!sit) return true;
+    if (sit === 'produzidas') return !!MARCA[r.tp];
+    if (sit === 'divergencias') return r.tp !== 'ok';
+    return r.tp === sit;
+  }
+
+  function filtrarRelatorio() {
+    const u = $('relUsuario').value, sit = $('relSituacao').value;
+    relLinhas = relTodas.filter(function (r) { return (!u || r.u === u) && passaSituacao(r, sit); });
+    desenharRelatorio(relLinhas);
+  }
+
+  /** Preenche uma tabela; colunas cujo nome começa com "#" ficam alinhadas à direita. */
+  function preencherTabela(alvo, cabecalho, linhas, classeLinha) {
+    alvo.innerHTML = '';
+    const cab = el('tr');
+    cabecalho.forEach(function (n) { cab.appendChild(el('th', n.charAt(0) === '#' ? 'num' : '', n.replace(/^#/, ''))); });
+    alvo.appendChild(cab);
+    linhas.forEach(function (l, i) {
+      const tr = el('tr', classeLinha ? classeLinha(i) : '');
+      l.forEach(function (v, j) { tr.appendChild(el('td', cabecalho[j].charAt(0) === '#' ? 'num' : '', v)); });
+      alvo.appendChild(tr);
+    });
+    if (!linhas.length) { const tr = el('tr'); const td = el('td', '', 'Nada no período'); td.colSpan = cabecalho.length; tr.appendChild(td); alvo.appendChild(tr); }
+  }
+
+  function contar(lista, chaveDe) {
+    const mapa = {}, ordem = [];
+    lista.forEach(function (r) {
+      const k = chaveDe(r);
+      if (!(k in mapa)) { mapa[k] = { kits: 0, ok: 0, fora: 0, tardia: 0, manual: 0, repetida: 0, desconhecida: 0, primeira: r.t, ultima: r.t }; ordem.push(k); }
+      const c = mapa[k];
+      if (MARCA[r.tp]) c.kits++;
+      if (r.tp in c) c[r.tp]++;
+      c.primeira = Math.min(c.primeira, r.t); c.ultima = Math.max(c.ultima, r.t);
+    });
+    return { mapa: mapa, ordem: ordem };
+  }
+  function divergencias(c) { return c.fora + c.tardia + c.manual + c.repetida + c.desconhecida; }
+  function dataHora(t) { return new Date(t).toLocaleDateString() + ' ' + hora(t); }
+
+  function desenharRelatorio(linhas) {
+    $('relResultado').style.display = relTodas.length ? 'block' : 'none';
+    const total = contar(linhas, function () { return 'tudo'; }).mapa.tudo ||
+      { kits: 0, ok: 0, fora: 0, tardia: 0, manual: 0, repetida: 0, desconhecida: 0 };
+    const opsDistintas = new Set(linhas.filter(function (r) { return r.o; }).map(function (r) { return r.o; })).size;
+    const placar = $('relPlacar'); placar.innerHTML = '';
+    [['Kits produzidos', total.kits], ['OPs', opsDistintas], ['OK', total.ok], ['Fora de ordem', total.fora],
+      ['Lidas depois', total.tardia], ['Lançadas à mão', total.manual], ['Repetidas', total.repetida], ['De outra OP', total.desconhecida]]
+      .forEach(function (p) { const d = el('div'); d.appendChild(el('b', '', p[1])); d.appendChild(document.createTextNode(p[0])); placar.appendChild(d); });
+
+    // Por dia
+    const dia = contar(linhas, function (r) { return new Date(r.t).toLocaleDateString(); });
+    preencherTabela($('relDia'), ['Dia', '#Kits produzidos', '#Divergências'],
+      dia.ordem.map(function (k) { return [k, dia.mapa[k].kits, divergencias(dia.mapa[k])]; }));
+
+    // Por OP (leituras de outra OP não têm OP: aparecem como "—")
+    const op = contar(linhas, function (r) { return r.o || '—'; });
+    relPorOP = op.ordem.map(function (k) {
+      const c = op.mapa[k];
+      return [k, c.kits, c.fora, c.tardia, c.manual, c.repetida + c.desconhecida, dataHora(c.primeira), dataHora(c.ultima)];
+    });
+    preencherTabela($('relOP'), ['OP', '#Kits', '#Fora de ordem', '#Lidas depois', '#À mão', '#Repetidas / outra OP', 'Primeira leitura', 'Última leitura'], relPorOP);
+
+    // Por operador
+    const usu = contar(linhas, function (r) { return r.u || '—'; });
+    preencherTabela($('relOperador'), ['Operador', '#Kits produzidos', '#Divergências'],
+      usu.ordem.sort().map(function (k) { return [k, usu.mapa[k].kits, divergencias(usu.mapa[k])]; }));
+
+    // Por hora do dia (só as horas com leitura)
+    const porHora = contar(linhas, function (r) { return new Date(r.t).getHours(); });
+    preencherTabela($('relHora'), ['Hora', '#Kits produzidos', '#Divergências'],
+      porHora.ordem.sort(function (a, b) { return a - b; }).map(function (h) {
+        return [String(h).padStart(2, '0') + ':00 – ' + String(h).padStart(2, '0') + ':59', porHora.mapa[h].kits, divergencias(porHora.mapa[h])];
+      }));
+
+    // Leituras (as 300 mais recentes na tela; o arquivo traz todas)
+    const recentes = linhas.slice(-300).reverse();
+    $('relNota').textContent = linhas.length > 300 ? 'Mostrando as 300 mais recentes de ' + linhas.length + '. O arquivo baixado traz todas.' : linhas.length + ' leitura(s).';
+    preencherTabela($('relDetalhe'), ['Data', 'Hora', 'OP', 'Seq', 'Código', 'Situação', 'Usuário'],
+      recentes.map(function (r) { return [new Date(r.t).toLocaleDateString(), hora(r.t), r.o, r.s, r.v, SITUACAO[r.tp] || r.tp, r.u]; }),
+      function (i) { return recentes[i].tp === 'ok' ? '' : 'divergencia'; });
+  }
+
+  function nomeArquivo(prefixo) {
+    const de = $('relDe').value, ate = $('relAte').value;
+    return prefixo + '-' + de + (ate !== de ? '-a-' + ate : '') + '.csv';
+  }
+  $('relBaixarDetalhe').onclick = function () {
+    this.blur();
+    baixarArquivoCsv(nomeArquivo('leituras'), CAB_DETALHE, linhasDetalhe(relLinhas));
+  };
+  $('relBaixarResumo').onclick = function () {
+    this.blur();
+    baixarArquivoCsv(nomeArquivo('resumo-por-op'),
+      ['OP', 'Kits produzidos', 'Fora de ordem', 'Lidas depois', 'Lançadas à mão', 'Repetidas / outra OP', 'Primeira leitura', 'Última leitura'], relPorOP);
+  };
 
   // ---------- Excluir uma OP (só administrador) ----------
   $('excluirOP').onclick = async function () {
