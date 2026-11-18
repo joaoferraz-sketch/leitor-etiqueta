@@ -3,304 +3,1284 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Leitor de Etiquetas</title>
+  <title>Conferência de Etiquetas</title>
   <!--
-    Leitor ao vivo (somente DataMatrix), hospedado no GitHub Pages.
-    Só grava depois de login com conta Google da empresa: o servidor confere
-    o login e devolve uma sessão; cada envio leva essa sessão.
-    Esta página não contém senha nem token: pode ficar em repositório público.
+    Conferência de etiquetas por Ordem de Produção — versão Firebase (Firestore).
+    Publicada no GitHub Pages. Esta página não contém senha: o firebaseConfig só
+    identifica o projeto; quem protege os dados é o login Google da empresa e as
+    regras do Firestore (só contas @sbxgroup.com leem ou gravam).
+
+    Dados no Firestore (desenhados para caber na cota gratuita do plano Spark):
+      ops/{op}        plano da OP: etiquetas em ordem de sequência e kits de produtos
+      marcas/{op}     m: {linha: [tipo, hora, usuário]}, log: histórico de leituras,
+                      pos: posição do PC 1 nesta OP, alerta, ult: hora da última gravação
+      sessoes/atual   OPs que o PC 1 está lendo (o PC 2 acompanha)
+      dias/{data}     qtd: kits produzidos no dia
+    O PC 1 confere cada leitura na hora e grava em pacotes a cada poucos segundos.
+    Sem internet, as leituras ficam guardadas no computador e gravam quando a conexão volta.
   -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 12px; background: #111; color: #eee; }
-    #telaLogin { text-align: center; padding: 40px 12px; }
-    #telaLogin h1 { font-size: 22px; }
-    #botaoGoogle { display: inline-block; margin: 20px 0; }
-    #telaLeitor { display: none; }
-    video { width: 100%; max-height: 50vh; background: #000; border-radius: 8px; object-fit: cover; }
-    .faixa { margin: 8px 0; padding: 10px; border-radius: 6px; background: #333; font-weight: bold; }
-    .faixa.ok { background: #1b6e2d; }
-    .faixa.aviso { background: #8a6d00; }
-    .faixa.erro { background: #8a1c1c; }
-    #envio { font-weight: normal; font-size: 13px; }
-    #placar { display: flex; gap: 8px; margin-bottom: 10px; }
-    #placar div { flex: 1; background: #222; border-radius: 6px; padding: 8px; text-align: center; font-size: 12px; }
-    #placar b { display: block; font-size: 24px; }
-    ul { list-style: none; padding: 0; margin: 0 0 10px; font-size: 13px; word-break: break-all; }
-    li { padding: 4px 0; border-bottom: 1px solid #333; }
-    button { font-size: 15px; padding: 10px 14px; margin: 0 8px 8px 0; border: 0; border-radius: 6px; }
-    #usuario { font-size: 12px; color: #aaa; }
+    :root {
+      --roxo: #a400bc; --roxo-escuro: #60156b; --roxo-claro: #fbf2fc;
+      --texto: #2a2f35; --texto-suave: #8a8479; --fundo: #fbfaf6; --borda: #e7e3d9;
+      --verde: #00d17f; --azul: #4664e1; --amarelo: #ffc101; --laranja: #ef9900; --vermelho: #e5484d;
+    }
+    body { font-family: 'Work Sans', system-ui, sans-serif; margin: 0; background: var(--fundo); color: var(--texto); }
+    h1, h2, button, .titulo { font-family: 'Quicksand', sans-serif; }
+    #cabecalho { display: flex; align-items: center; gap: 14px; padding: 10px 18px; background: #fff; border-bottom: 1px solid var(--borda); flex-wrap: wrap; }
+    #cabecalho img { height: 34px; }
+    #cabecalho .titulo { font-weight: 700; font-size: 18px; flex: 1; }
+    #topoTexto { font-size: 13px; color: var(--texto-suave); }
+    #cabecalho a { font-size: 13px; color: var(--roxo); cursor: pointer; font-weight: 600; display: none; }
+    main { padding: 16px 18px; max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 24px; margin: 0 0 12px; }
+    h2 { font-size: 14px; margin: 20px 0 8px; color: var(--texto-suave); text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 8px; }
+    svg.icone { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+    .tela { display: none; }
+    .caixa { background: #fff; border: 1px solid var(--borda); border-radius: 22px; padding: 18px; margin: 10px 0; }
+    .rotulo { font-size: 12px; color: var(--texto-suave); text-transform: uppercase; letter-spacing: .04em; }
+    .faixa { margin: 10px 0; padding: 12px 16px; border-radius: 13px; background: var(--roxo-claro); color: var(--roxo-escuro); font-weight: 600; }
+    .faixa.aviso { background: var(--amarelo); color: var(--texto); }
+    .faixa.erro { background: var(--vermelho); color: #fff; }
+    .placar { display: flex; gap: 10px; flex-wrap: wrap; }
+    .placar div { flex: 1; min-width: 120px; background: #fff; border: 1px solid var(--borda); border-radius: 22px; padding: 12px; text-align: center; font-size: 12px; color: var(--texto-suave); }
+    .placar b { display: block; font-family: 'Quicksand', sans-serif; font-size: 30px; color: var(--roxo); }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; background: #fff; border-radius: 13px; overflow: hidden; }
+    td, th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--borda); vertical-align: top; }
+    th { color: var(--texto-suave); font-size: 12px; text-transform: uppercase; }
+    tr.novaOP td { border-top: 3px solid var(--azul); }
+    input[type=text], input[type=password] { font: 500 20px 'Work Sans', sans-serif; padding: 10px 14px; width: 320px; max-width: 90%; border-radius: 13px; border: 1px solid var(--borda); color: var(--texto); }
+    input:focus { outline: 2px solid var(--roxo); }
+    input[type=file] { font-size: 14px; margin: 8px 0; }
+    button { font-size: 16px; font-weight: 700; padding: 11px 22px; margin: 8px 8px 0 0; border-radius: 999px; cursor: pointer;
+      border: 2px solid var(--roxo); background: #fff; color: var(--roxo); display: inline-flex; align-items: center; gap: 8px; }
+    button.principal { background: var(--roxo); color: #fff; }
+    button:hover { filter: brightness(.95); }
+    button:disabled { opacity: .5; cursor: default; }
+    button.perigo { border-color: var(--vermelho); color: var(--vermelho); }
+    button.perigo.principal { background: var(--vermelho); color: #fff; }
+
+    /* Login */
+    #telaLogin { text-align: center; padding-top: 60px; }
+
+    /* Contador do dia e janela */
+    #hoje { margin: 0; padding: 6px 16px; font-size: 14px; display: none; }
+    #hoje b { font-size: 18px; }
+    #janela { display: none; position: fixed; inset: 0; background: rgba(42, 47, 53, .55); z-index: 10; padding: 24px; overflow-y: auto; }
+    #janela .caixa { max-width: 900px; margin: 0 auto; }
+    #janelaTopo { display: flex; align-items: center; gap: 12px; }
+    #janelaTopo h1 { flex: 1; margin: 0; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .chips span { background: var(--roxo-claro); color: var(--roxo-escuro); border-radius: 999px; padding: 4px 14px; font: 700 14px 'Quicksand', sans-serif; }
+
+    /* Escolha do computador e botões de OP (PC 2) */
+    .grade { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+    button.grandao { flex: 1; min-width: 260px; margin: 0; padding: 34px 20px; border-radius: 24px; flex-direction: column; gap: 10px;
+      justify-content: center; font-size: 30px; background: #fff; color: var(--texto); border: 2px solid var(--borda); }
+    button.grandao:hover { border-color: var(--roxo); }
+    button.grandao svg.icone { width: 56px; height: 56px; color: var(--roxo); }
+    button.grandao small { font: 400 15px 'Work Sans', sans-serif; color: var(--texto-suave); }
+    button.grandao.lendo { border-color: var(--verde); border-width: 3px; }
+    button.grandao .marca { font: 700 13px 'Quicksand', sans-serif; background: var(--verde); color: #0b3d27; border-radius: 999px; padding: 3px 12px; }
+
+    /* Etiquetas não bipadas (PC 1) */
+    #pendentes { display: none; border-color: var(--amarelo); border-width: 2px; }
+    #listaPendentes { max-height: 260px; overflow-y: auto; margin-top: 8px; }
+    .pendente { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--borda); font-size: 15px; }
+    .pendente span { flex: 1; }
+    .pendente button, #lancarTodas { margin: 0; padding: 6px 16px; font-size: 14px; }
+
+    /* Leitura (PC 1) */
+    #sinal { border-radius: 24px; padding: 26px; text-align: center; background: var(--roxo-claro); color: var(--roxo-escuro); }
+    #sinal.ok { background: var(--verde); color: #0b3d27; }
+    #sinal.erro { background: var(--vermelho); color: #fff; }
+    #sinal.troca { background: var(--azul); color: #fff; }
+    #sinal.aviso { background: var(--amarelo); color: var(--texto); }
+    #sinalTitulo { font: 700 52px 'Quicksand', sans-serif; }
+    #sinalDetalhe { font-size: 22px; margin-top: 4px; }
+    #contador { text-align: center; margin: 18px 0 4px; font-family: 'Quicksand', sans-serif; font-weight: 700; }
+    #contador b { font-size: 88px; color: var(--roxo); }
+    #contador span { font-size: 34px; color: var(--texto-suave); }
+    #contadorRotulo, #gravacao { text-align: center; color: var(--texto-suave); }
+    #proxima { text-align: center; font-size: 20px; margin-top: 10px; font-weight: 500; }
+    #gravacao { font-size: 13px; margin-top: 12px; }
+
+    /* Produtos (PC 2) */
+    #agora { border: 3px solid var(--verde); display: flex; gap: 18px; align-items: center; }
+    #agora.acabando { border-color: var(--amarelo); }
+    #agoraProdutos { flex: 1; }
+    .produto { font: 700 32px 'Quicksand', sans-serif; padding: 10px 0; }
+    .produto + .produto { border-top: 2px solid var(--borda); }
+    .bloco .itens div { padding: 6px 0; }
+    .bloco .itens div + div { border-top: 1px solid var(--borda); }
+    #agoraFalta { text-align: center; min-width: 200px; }
+    #agoraFalta b { display: block; font: 700 104px/1 'Quicksand', sans-serif; color: var(--roxo); }
+    #agora.acabando #agoraFalta b { color: var(--laranja); }
+    .bloco { display: flex; gap: 16px; align-items: center; padding: 12px 18px; }
+    .bloco .qtd { font: 700 32px 'Quicksand', sans-serif; min-width: 90px; text-align: center; color: var(--roxo); }
+    .bloco .qtd small { display: block; font: 400 11px 'Work Sans', sans-serif; color: var(--texto-suave); text-transform: uppercase; }
+    .bloco .itens { flex: 1; font-size: 18px; }
+    .divisorOP { display: inline-block; margin: 12px 0 2px; padding: 6px 16px; border-radius: 999px; background: var(--azul); color: #fff; font: 700 15px 'Quicksand', sans-serif; }
+    #faixaProduto { font: 700 28px 'Quicksand', sans-serif; text-align: center; }
+    #esperaProduto { text-align: center; padding: 60px 18px; font-size: 20px; color: var(--texto-suave); }
   </style>
 </head>
 <body>
-  <div id="telaLogin">
-    <h1>Leitor de Etiquetas</h1>
+  <div id="cabecalho">
+    <img src="https://www.sbxgroup.com/assets/sandbox-group-logo.png" alt="Sandbox Group" onerror="this.style.display='none'">
+    <div class="titulo">Conferência de Etiquetas</div>
+    <span id="topoTexto"></span>
+    <button id="hoje" title="Ver tudo que foi produzido hoje">Hoje: <b id="hojeQtd">0</b> kits</button>
+    <a id="voltar">Outras OPs</a>
+    <a id="trocar">Trocar de computador</a>
+    <a id="sair">Sair</a>
+  </div>
+  <main>
+
+  <!-- Login -->
+  <div id="telaLogin" class="tela">
+    <h1>Conferência de Etiquetas</h1>
     <p>Entre com a sua conta da empresa para começar.</p>
-    <div id="botaoGoogle"></div>
-    <div id="msgLogin" class="faixa" style="display:none"></div>
+    <button class="principal" id="entrar">Entrar com Google</button>
+    <div id="msgLogin" class="faixa" style="display:none; max-width:560px; margin:16px auto"></div>
   </div>
 
-  <div id="telaLeitor">
-    <video id="video" playsinline muted autoplay></video>
-    <div id="status" class="faixa">Iniciando…</div>
-    <div id="envio" class="faixa">Gravação: aguardando leituras</div>
-    <div id="placar">
-      <div><b id="nLidas">0</b>etiquetas lidas</div>
-      <div><b id="nGravadas">0</b>gravadas</div>
-      <div><b id="nRepetidas">0</b>já na planilha</div>
-      <div><b id="nPendentes">0</b>na fila</div>
+  <!-- Escolha do computador -->
+  <div id="telaPapel" class="tela">
+    <h1>Qual é este computador?</h1>
+    <div class="grade">
+      <button class="grandao" id="papelPC1" data-icone="leitor">PC 1 · Leitura<small>Abre as OPs e lê as etiquetas</small></button>
+      <button class="grandao" id="papelPC2" data-icone="caixa">PC 2 · Produtos<small>Mostra os produtos das OPs que o PC 1 abriu</small></button>
     </div>
-    <ul id="ultimas"></ul>
-    <button id="ligar">Ligar câmera</button>
-    <button id="sair">Sair</button>
-    <div id="usuario"></div>
   </div>
 
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script>
-  // ---------- Configuração: preencha antes de enviar ao GitHub (nenhum dos dois é segredo) ----------
-  const URL_WEBAPP = 'https://script.google.com/macros/s/AKfycbw9MoEZ8RRaC-t88asWYN1FhVd1e17T4ijc_1fBiyG9itdINwQ7oSDXMOVbfXrxpJ39/exec';
-  const CLIENT_ID = '832294514610-qkndmjqt960674241dhpt052s780lltv.apps.googleusercontent.com';
-  const DOMINIO = 'sbxgroup.com';
+  <!-- PC 2: OPs que o PC 1 selecionou -->
+  <div id="telaOPs" class="tela">
+    <h1>OPs em leitura no PC 1</h1>
+    <div id="infoOPs" class="rotulo"></div>
+    <div class="grade" id="botoesOPs"></div>
+  </div>
 
-  const INTERVALO_ENVIO_MS = 2000;   // envia a fila em lotes a cada 2 s
-  const TAMANHO_LOTE = 100;
-  const CHAVE_FILA = 'leitorFilaEtiquetas';
-  const CHAVE_SESSAO = 'leitorSessao';
+  <!-- PC 1: início -->
+  <div id="telaInicio" class="tela">
+    <div class="caixa" id="cartaoAtiva" style="display:none; border-color: var(--roxo)">
+      <h2 style="margin-top:0" data-icone="olho">Em andamento agora</h2>
+      <div id="ativaTexto" style="font-size:18px; font-weight:500"></div>
+      <button class="principal" id="continuarAtiva" data-icone="leitor">Continuar a leitura</button>
+      <button id="encerrarAtiva">Encerrar</button>
+    </div>
+    <div class="caixa">
+      <h2 style="margin-top:0" data-icone="lista">Abrir OPs</h2>
+      <div class="rotulo" style="margin-bottom:6px">Na ordem de produção, separadas por vírgula</div>
+      <input type="text" id="campoOP" autocomplete="off" placeholder="71809, 71810">
+      <button class="principal" id="abrirOP">Abrir</button>
+      <div id="opsCarregadas" class="rotulo" style="margin-top:10px"></div>
+    </div>
+    <div class="caixa">
+      <h2 style="margin-top:0" data-icone="subir">Carregar OPs novas</h2>
+      <div style="font-size:14px">Selecione juntos os arquivos <b>Etiquetas-OP-…csv</b> e <b>PlanilhaEmbalagem-OP-…csv</b> de uma ou mais OPs.</div>
+      <input type="file" id="arquivos" accept=".csv" multiple>
+      <br><button id="enviarArquivos">Carregar arquivos</button>
+    </div>
+    <div id="msgInicio" class="faixa" style="display:none"></div>
+    <button class="perigo" id="abrirReset" style="margin-top:24px">Resetar a base de dados</button>
+  </div>
 
-  const video = document.getElementById('video');
-  const elStatus = document.getElementById('status');
-  const elEnvio = document.getElementById('envio');
-  const elMsgLogin = document.getElementById('msgLogin');
+  <!-- Conferência antes de começar -->
+  <div id="telaConferencia" class="tela">
+    <h1 id="confTitulo"></h1>
+    <div class="placar">
+      <div><b id="confTotal">0</b>etiquetas</div>
+      <div><b id="confLidas">0</b>já lidas</div>
+      <div><b id="confBlocos">0</b>blocos de produto</div>
+      <div><b id="confSem">0</b>sem produto</div>
+    </div>
+    <h2 data-icone="caixa">Blocos na ordem de produção</h2>
+    <table id="confTabela"></table>
+    <h2>Transportadoras</h2>
+    <table id="confTransp"></table>
+    <button class="principal" id="modoLeitura" data-icone="leitor" style="margin-top:18px">Começar a leitura</button>
+  </div>
 
-  const brutosVistos = new Set();    // conteúdos já enfileirados (cada variante é enviada uma vez)
-  const codigosVistos = new Set();   // etiquetas já contadas (sem o prefixo "5.")
-  let fila = [];
-  let sessao = null;                 // {sessao, email, expira}
-  let enviando = false, lidas = 0, gravadas = 0, repetidas = 0, lacoAtivo = false, audio = null;
+  <!-- PC 1: leitura -->
+  <div id="telaLeitura" class="tela">
+    <div id="sinal"><div id="sinalTitulo">PRONTO</div><div id="sinalDetalhe">Passe a etiqueta no leitor</div></div>
+    <div id="contador"><b id="contLidas">0</b><span> de </span><span id="contTotal">0</span></div>
+    <div id="contadorRotulo"></div>
+    <div id="proxima"></div>
+    <div id="avisoFimLeitura" class="faixa aviso" style="display:none; text-align:center; font-size:20px"></div>
+    <div id="gravacao"></div>
+    <div class="caixa" id="pendentes">
+      <div style="display:flex; align-items:center; gap:12px">
+        <h2 style="margin:0; flex:1" data-icone="lista"><span id="tituloPendentes">Etiquetas não bipadas</span></h2>
+        <button id="lancarTodas">Lançar todas</button>
+      </div>
+      <div class="rotulo" style="margin-top:6px">Bipe a etiqueta para recuperá-la, ou lance manualmente se o kit foi produzido sem bipar.</div>
+      <div id="listaPendentes"></div>
+    </div>
+  </div>
 
-  function status(texto, classe) { elStatus.textContent = texto; elStatus.className = 'faixa ' + (classe || ''); }
-  function envio(texto, classe) { elEnvio.textContent = texto; elEnvio.className = 'faixa ' + (classe || ''); }
-  function msgLogin(texto, classe) {
-    elMsgLogin.style.display = texto ? 'block' : 'none';
-    elMsgLogin.textContent = texto; elMsgLogin.className = 'faixa ' + (classe || '');
-  }
+  <!-- PC 2: produtos -->
+  <div id="telaProduto" class="tela">
+    <div id="esperaProduto" class="caixa">Aguardando o computador da leitura abrir uma OP…</div>
+    <div id="painelProduto" style="display:none">
+      <div id="faixaProduto" class="faixa" style="display:none"></div>
+      <div id="avisoFimProduto" class="faixa aviso" style="display:none; text-align:center; font-size:22px"></div>
+      <div class="caixa" id="agora">
+        <div id="agoraProdutos"></div>
+        <div id="agoraFalta"><div class="rotulo">Faltam</div><b id="faltam">0</b><div class="rotulo" id="faltamDe"></div></div>
+      </div>
+      <h2>Depois</h2>
+      <div id="depois"></div>
+      <div id="rodapeProduto" class="rotulo" style="margin-top:14px"></div>
+    </div>
+    <button id="voltarOPs" data-icone="lista">Ver as OPs</button>
+  </div>
 
-  async function chamar(corpo) {
-    // text/plain evita a verificação prévia (preflight) que o Apps Script não responde
-    const resp = await fetch(URL_WEBAPP, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(corpo)
-    });
-    return resp.json();
-  }
+  </main>
 
-  // ---------- Login ----------
-  function mostrarLeitor() {
-    document.getElementById('telaLogin').style.display = 'none';
-    document.getElementById('telaLeitor').style.display = 'block';
-    document.getElementById('usuario').textContent = 'Conectado como ' + sessao.email;
-    iniciar();
-  }
+  <!-- Janela: produção do dia ou reset -->
+  <div id="janela">
+    <div class="caixa">
+      <div id="janelaTopo"><h1 id="janelaTitulo"></h1><button id="fecharJanela">Fechar</button></div>
+      <div id="janelaCorpo"></div>
+    </div>
+  </div>
 
-  function mostrarLogin(mensagem) {
-    sessao = null;
-    try { localStorage.removeItem(CHAVE_SESSAO); } catch (e) {}
-    document.getElementById('telaLeitor').style.display = 'none';
-    document.getElementById('telaLogin').style.display = 'block';
-    msgLogin(mensagem || '', mensagem ? 'aviso' : '');
-  }
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut }
+    from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+  import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc,
+    deleteDoc, onSnapshot, collection, query, where, orderBy, limit, writeBatch, arrayUnion, increment }
+    from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
-  async function aoEntrarComGoogle(resposta) {
-    try {
-      msgLogin('Conferindo o login…', '');
-      const r = await chamar({ acao: 'entrar', idToken: resposta.credential });
-      if (r.status !== 'ok') { msgLogin('Não foi possível entrar: ' + (r.mensagem || 'erro'), 'erro'); return; }
-      sessao = { sessao: r.sessao, email: r.email, expira: r.expira };
-      try { localStorage.setItem(CHAVE_SESSAO, JSON.stringify(sessao)); } catch (e) {}
-      msgLogin('', '');
-      mostrarLeitor();
-    } catch (e) {
-      msgLogin('Falha ao falar com a planilha: ' + e.message, 'erro');
-    }
-  }
-
-  function prepararLogin() {
-    if (!window.google || !google.accounts || !google.accounts.id) { setTimeout(prepararLogin, 200); return; }
-    google.accounts.id.initialize({ client_id: CLIENT_ID, callback: aoEntrarComGoogle, hd: DOMINIO, auto_select: true });
-    google.accounts.id.renderButton(document.getElementById('botaoGoogle'), { theme: 'filled_blue', size: 'large', text: 'signin_with' });
-  }
-
-  document.getElementById('sair').onclick = function () {
-    try { google.accounts.id.disableAutoSelect(); } catch (e) {}
-    mostrarLogin('Você saiu. As leituras que estavam na fila continuam guardadas neste aparelho.');
+  // ---------- Configuração (não é senha: só identifica o projeto) ----------
+  const firebaseConfig = {
+    apiKey: 'AIzaSyBDSV-HJn8abpXveea1uyoRAc6knVmrHy8',
+    authDomain: 'sbx-conferencia-etiquetas.firebaseapp.com',
+    projectId: 'sbx-conferencia-etiquetas',
+    storageBucket: 'sbx-conferencia-etiquetas.firebasestorage.app',
+    messagingSenderId: '760309042201',
+    appId: '1:760309042201:web:bf401d07dc8278a06cae88'
   };
+  const DOMINIO = 'sbxgroup.com';
+  const SENHA_RESET = '123456';          // trava contra clique acidental, não é segurança
 
-  // ---------- Leitura ----------
-  /** "5.CB23263360" -> "CB23263360" */
-  function codigoDe(valor) {
-    const m = /^\d+\.(.+)$/.exec(valor);
-    return m ? m[1] : valor;
-  }
+  const INTERVALO_GRAVACAO_MS = 4000;    // o PC 1 grava em pacotes a cada 4 s (cabe na cota gratuita)
+  const INTERVALO_DIA_MS = 30000;        // contador do dia a cada 30 s
+  const AVISO_ACABANDO = 3;              // destaca o bloco quando faltam 3 ou menos
+  const BLOCOS_DEPOIS = 5;
+  const AVISO_FIM_OP = 10;               // alerta quando faltam 10 etiquetas para acabar a OP
+  const MARCA = { ok: 1, fora: 1, tardia: 1, manual: 1 };   // tipos que marcam a etiqueta como feita
+  const SITUACAO = { ok: 'OK', fora: 'Fora de ordem', tardia: 'Lida depois', manual: 'Lançada manualmente',
+    repetida: 'Repetida', desconhecida: 'De outra OP' };
+  const MAX_PENDENTES_NA_TELA = 100;
 
-  // A fila fica guardada no aparelho: recarregar a página recupera o que não foi gravado
-  function carregarFila() {
-    try { fila = JSON.parse(localStorage.getItem(CHAVE_FILA)) || []; } catch (e) { fila = []; }
-    fila.forEach(function (l) { brutosVistos.add(l.valor); codigosVistos.add(codigoDe(l.valor)); });
-  }
-  function guardarFila() {
-    try { localStorage.setItem(CHAVE_FILA, JSON.stringify(fila)); } catch (e) {}
-  }
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  // Cache no próprio computador: sem internet, leituras e consultas continuam e sincronizam depois
+  const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 
-  function placar() {
-    document.getElementById('nLidas').textContent = lidas;
-    document.getElementById('nGravadas').textContent = gravadas;
-    document.getElementById('nRepetidas').textContent = repetidas;
-    document.getElementById('nPendentes').textContent = fila.length;
-  }
+  const refOP = function (op) { return doc(db, 'ops', op); };
+  const refMarcas = function (op) { return doc(db, 'marcas', op); };
+  const refSessao = doc(db, 'sessoes', 'atual');
+  const refDia = function (d) { return doc(db, 'dias', d); };
 
-  function bip(freq) {
+  // Ícones de traço (estilo "lineal")
+  const ICONES = {
+    leitor: '<path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M7 8v8M10 8v8M13 8v8M17 8v8"/>',
+    caixa: '<path d="M3 8l9-5 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8"/>',
+    subir: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
+    olho: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    lista: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'
+  };
+  document.querySelectorAll('[data-icone]').forEach(function (e) {
+    e.insertAdjacentHTML('afterbegin', '<svg class="icone" viewBox="0 0 24 24">' + ICONES[e.getAttribute('data-icone')] + '</svg>');
+  });
+
+  // ---------- Estado ----------
+  let usuario = null;          // conta Google logada
+  let S = null;                // sessão: {ops, chave, itens, blocos, kits, porValor, totalOP, opInicio, p, lidas, alerta}
+  let modo = null;             // leitura | produto | ops | null
+  let ativa = null;            // sessoes/atual (o que o PC 1 está lendo)
+  let buffer = [];             // leituras do PC 1 ainda não confirmadas pelo Firebase
+  const emVoo = new Set();     // ids enviados aguardando confirmação
+  let erroGravacao = '', audio = null;
+  let hojeQtd = 0, diaPendente = 0, diaOuvido = '', pararDia = null;
+  let pararSessao = null, pararMarcas = [], chaveSeguida = null;
+  let alertaVisto = null, blocoVisto = -1, faixaAte = 0;
+  const avisadosFim = {};
+
+  const $ = function (id) { return document.getElementById(id); };
+  function el(tag, classe, texto) {
+    const e = document.createElement(tag);
+    if (classe) e.className = classe;
+    if (texto !== undefined && texto !== null) e.textContent = texto;
+    return e;
+  }
+  const TELAS = ['telaLogin', 'telaPapel', 'telaOPs', 'telaInicio', 'telaConferencia', 'telaLeitura', 'telaProduto'];
+  function mostrar(tela) {
+    TELAS.forEach(function (t) { $(t).style.display = t === tela ? 'block' : 'none'; });
+    const logado = tela !== 'telaLogin';
+    $('hoje').style.display = logado ? 'inline-flex' : 'none';
+    $('sair').style.display = logado ? 'inline' : 'none';
+    $('trocar').style.display = logado && tela !== 'telaPapel' ? 'inline' : 'none';
+    $('voltar').style.display = tela === 'telaConferencia' || tela === 'telaLeitura' ? 'inline' : 'none';
+    if (tela === 'telaPapel' || tela === 'telaLogin') $('topoTexto').textContent = '';
+    else if (tela === 'telaInicio') $('topoTexto').textContent = 'PC 1 · Leitura';
+    else if (tela === 'telaOPs') $('topoTexto').textContent = 'PC 2 · Produtos';
+  }
+  function faixa(id, texto, classe) {
+    const e = $(id);
+    e.style.display = texto ? 'block' : 'none';
+    e.textContent = texto || '';
+    e.className = 'faixa ' + (classe || '');
+  }
+  function textoErro(e) {
+    const c = e && e.code ? String(e.code) : '';
+    if (c.indexOf('permission-denied') !== -1) return 'sem permissão (entre com a conta @' + DOMINIO + ')';
+    if (c.indexOf('unavailable') !== -1) return 'sem conexão com o Firebase';
+    return (e && e.message) || String(e);
+  }
+  function nomeSessao(ops) { return (ops.length > 1 ? 'OPs ' : 'OP ') + ops.join(', '); }
+  function novoId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  function idOP(op) {
+    const id = String(op || '').trim();
+    if (!/^[\w-]{1,30}$/.test(id)) throw new Error('ID da Ordem de Produção inválido: ' + id);
+    return id;
+  }
+  function dataHoje() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function inicioDoDia() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  function hora(t) { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+  function lerLocal(chave, padrao) { try { const v = localStorage.getItem(chave); return v === null ? padrao : JSON.parse(v); } catch (e) { return padrao; } }
+  function gravarLocal(chave, valor) { try { localStorage.setItem(chave, JSON.stringify(valor)); } catch (e) {} }
+
+  function bip(freq, vezes) {
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-      const o = audio.createOscillator();
-      o.frequency.value = freq; o.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.1);
+      for (let i = 0; i < (vezes || 1); i++) {
+        const o = audio.createOscillator();
+        o.frequency.value = freq; o.connect(audio.destination);
+        o.start(audio.currentTime + i * 0.22); o.stop(audio.currentTime + i * 0.22 + 0.12);
+      }
+    } catch (e) {}
+  }
+  /** Som de fim de OP: três notas subindo, duas vezes. */
+  function somFimOP() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      [660, 880, 1100, 660, 880, 1100].forEach(function (f, i) {
+        const o = audio.createOscillator();
+        o.frequency.value = f; o.connect(audio.destination);
+        o.start(audio.currentTime + 0.2 + i * 0.16); o.stop(audio.currentTime + 0.2 + i * 0.16 + 0.13);
+      });
     } catch (e) {}
   }
 
-  function aoLer(valor) {
-    valor = String(valor || '').trim();
-    if (!valor || brutosVistos.has(valor)) return;
-    brutosVistos.add(valor);
-    fila.push({ valor: valor, lidoEm: new Date().toISOString() });
-    guardarFila();
-
-    const codigo = codigoDe(valor);
-    if (!codigosVistos.has(codigo)) {      // etiqueta nova (o segundo DataMatrix dela não conta de novo)
-      codigosVistos.add(codigo);
-      lidas++;
-      bip(880);
-      const lista = document.getElementById('ultimas');
-      const li = document.createElement('li');
-      li.textContent = codigo;
-      lista.insertBefore(li, lista.firstChild);
-      while (lista.children.length > 8) lista.removeChild(lista.lastChild);
-      status('Lido: ' + codigo, 'ok');
-    }
-    placar();
-  }
-
-  // ---------- Gravação em lotes ----------
-  async function enviarFila() {
-    if (enviando || !fila.length || !sessao) return;
-    enviando = true;
-    const lote = fila.slice(0, TAMANHO_LOTE);
+  // ---------- Login ----------
+  $('entrar').onclick = async function () {
+    faixa('msgLogin', '', '');
     try {
-      const r = await chamar({ acao: 'gravar', sessao: sessao.sessao, codigos: lote });
-      if (r.status === 'sessao') { mostrarLogin('Sua sessão venceu. Entre de novo para continuar gravando.'); return; }
-      if (r.status !== 'ok') { envio('Planilha recusou: ' + (r.mensagem || 'resposta inesperada'), 'erro'); return; }
-      const enviados = new Set(lote.map(function (l) { return l.valor; }));
-      fila = fila.filter(function (l) { return !enviados.has(l.valor); });
-      guardarFila();
-      gravadas += r.gravadas; repetidas += r.duplicadas;
-      placar();
-      envio('Último envio: ' + r.gravadas + ' gravadas, ' + r.duplicadas + ' já na planilha (' +
-        new Date().toLocaleTimeString() + ')', '');
+      const provedor = new GoogleAuthProvider();
+      provedor.setCustomParameters({ hd: DOMINIO, prompt: 'select_account' });
+      await signInWithPopup(auth, provedor);
     } catch (e) {
-      // Fica na fila e tenta de novo no próximo ciclo
-      envio('Sem gravar (' + e.message + '). ' + fila.length + ' na fila, tentando de novo…', 'erro');
-    } finally {
-      enviando = false;
+      if (e && e.code === 'auth/popup-closed-by-user') return;
+      faixa('msgLogin', 'Não foi possível entrar: ' + textoErro(e), 'erro');
     }
-  }
-  setInterval(enviarFila, INTERVALO_ENVIO_MS);
+  };
+  $('sair').onclick = function () { pararTudo(); signOut(auth); };
 
-  // ---------- Câmera ----------
-  const CAMERA = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
-
-  function manterTelaLigada() {
-    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(function () {}); } catch (e) {}
-  }
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && lacoAtivo) manterTelaLigada();
+  onAuthStateChanged(auth, function (u) {
+    const daEmpresa = u && u.emailVerified && new RegExp('@' + DOMINIO.replace('.', '\\.') + '$', 'i').test(u.email || '');
+    if (u && !daEmpresa) {
+      signOut(auth);
+      faixa('msgLogin', 'Use a sua conta @' + DOMINIO + '.', 'aviso');
+      return;
+    }
+    usuario = daEmpresa ? u : null;
+    if (!usuario) { pararTudo(); mostrar('telaLogin'); return; }
+    ouvirDia();
+    const papel = lerLocal('papel', null);
+    definirPapel(papel === 'pc1' || papel === 'pc2' ? papel : null);
+    if (new URLSearchParams(location.search).get('tela') === 'produtos') definirPapel('pc2');
   });
 
-  async function iniciarNativo(fluxo) {
-    const detector = new BarcodeDetector({ formats: ['data_matrix'] });
-    video.srcObject = fluxo;
-    await video.play();
-    status('Aponte para o DataMatrix', '');
-    if (lacoAtivo) return;
-    lacoAtivo = true;
-    (async function laco() {
-      try {
-        const achados = await detector.detect(video);
-        achados.forEach(function (a) { aoLer(a.rawValue); });
-      } catch (e) {}
-      setTimeout(laco, 30);   // lê o mais rápido que o aparelho permitir
-    })();
+  function pararTudo() {
+    modo = null; S = null;
+    pararPC2();
+    if (pararDia) { pararDia(); pararDia = null; diaOuvido = ''; }
   }
 
-  function carregarScript(url) {
+  // ---------- Escolha do computador ----------
+  /** Abre a primeira tela do computador escolhido (pc1, pc2) ou a escolha (null). A escolha fica guardada. */
+  function definirPapel(papel) {
+    modo = null; S = null;
+    pararPC2();
+    gravarLocal('papel', papel);
+    if (papel === 'pc1') { faixa('msgInicio', '', ''); mostrar('telaInicio'); listar(); }
+    else if (papel === 'pc2') {
+      bip(880);            // libera o som do navegador para os avisos
+      modo = 'ops'; $('botoesOPs').innerHTML = ''; $('infoOPs').textContent = 'Atualizando…';
+      mostrar('telaOPs'); seguirSessao();
+    } else mostrar('telaPapel');
+  }
+  $('papelPC1').onclick = function () { definirPapel('pc1'); };
+  $('papelPC2').onclick = function () { definirPapel('pc2'); };
+  $('trocar').onclick = function () { definirPapel(null); };
+  $('voltar').onclick = function () { definirPapel('pc1'); };
+  $('voltarOPs').onclick = function () { definirPapel('pc2'); };
+
+  // ---------- Contador do dia ----------
+  function ouvirDia() {
+    const d = dataHoje();
+    if (d === diaOuvido || !usuario) return;
+    if (pararDia) pararDia();
+    diaOuvido = d; hojeQtd = 0; desenharHoje();
+    pararDia = onSnapshot(refDia(d), function (s) {
+      hojeQtd = s.exists() ? Number(s.data().qtd) || 0 : 0;
+      desenharHoje();
+    }, function () {});
+  }
+  setInterval(ouvirDia, 60000);
+
+  function desenharHoje() {
+    $('hojeQtd').textContent = hojeQtd + (modo === 'leitura' ? diaPendente : 0);
+  }
+
+  /** Soma ao dia os kits marcados pelo PC 1 desde a última vez (uma gravação a cada 30 s, no máximo). */
+  function gravarDia() {
+    if (!diaPendente || !usuario) return;
+    const n = diaPendente; diaPendente = 0;
+    ouvirDia();
+    setDoc(refDia(dataHoje()), { qtd: increment(n), atualizado: Date.now() }, { merge: true })
+      .catch(function () { diaPendente += n; });
+  }
+  setInterval(gravarDia, INTERVALO_DIA_MS);
+
+  // ---------- Arquivos das OPs ----------
+  function semAcento(s) {
+    return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  }
+  function lerArquivo(arquivo) {
     return new Promise(function (ok, falha) {
-      const s = document.createElement('script');
-      s.src = url; s.onload = ok; s.onerror = falha; document.head.appendChild(s);
+      const leitor = new FileReader();
+      leitor.onerror = function () { falha(new Error('Não consegui ler ' + arquivo.name)); };
+      leitor.onload = function () {
+        let texto;
+        try { texto = new TextDecoder('utf-8', { fatal: true }).decode(leitor.result); }
+        catch (e) { texto = new TextDecoder('windows-1252').decode(leitor.result); }   // formato que o sistema exporta
+        ok(texto);
+      };
+      leitor.readAsArrayBuffer(arquivo);
     });
   }
+  /** CSV separado por ";" (aceita campos entre aspas). */
+  function lerCsv(texto) {
+    const linhas = [];
+    let campo = '', linha = [], aspas = false;
+    for (let i = 0; i < texto.length; i++) {
+      const c = texto[i];
+      if (aspas) {
+        if (c === '"' && texto[i + 1] === '"') { campo += '"'; i++; }
+        else if (c === '"') aspas = false;
+        else campo += c;
+      } else if (c === '"' && campo === '') aspas = true;
+      else if (c === ';') { linha.push(campo); campo = ''; }
+      else if (c === '\n') { linha.push(campo); linhas.push(linha); linha = []; campo = ''; }
+      else if (c !== '\r') campo += c;
+    }
+    if (campo !== '' || linha.length) { linha.push(campo); linhas.push(linha); }
+    return linhas.filter(function (l) { return l.some(function (v) { return v.trim() !== ''; }); });
+  }
+  /** Acha a linha de cabeçalho que contém as colunas pedidas e devolve os registros por nome de coluna. */
+  function tabela(linhas, obrigatorias) {
+    for (let i = 0; i < Math.min(linhas.length, 5); i++) {
+      const nomes = linhas[i].map(semAcento);
+      if (obrigatorias.every(function (n) { return nomes.indexOf(n) !== -1; })) {
+        return {
+          titulo: i > 0 ? linhas[0].join(' ').trim() : '',
+          registros: linhas.slice(i + 1).map(function (l) {
+            const r = {};
+            nomes.forEach(function (n, j) { if (!(n in r)) r[n] = (l[j] || '').trim(); });
+            return r;
+          })
+        };
+      }
+    }
+    return null;
+  }
+  /** Lê todos os arquivos e devolve uma carga por OP (só os dados necessários à conferência). */
+  async function prepararOPs(arquivos) {
+    const etiquetas = [], porFatura = {}, tituloDaFatura = {};
+    let temEmbalagem = false;
+    for (const arquivo of arquivos) {
+      const linhas = lerCsv(await lerArquivo(arquivo));
+      const e = tabela(linhas, ['codigo de barras', 'codigo de barras sorter', 'sequencia', 'id ordem de producao', 'pedido']);
+      const p = e ? null : tabela(linhas, ['fatura', 'livros', 'brinde']);
+      if (e) Array.prototype.push.apply(etiquetas, e.registros);
+      else if (p) {
+        temEmbalagem = true;
+        p.registros.forEach(function (r) {
+          if (r['fatura']) { porFatura[r['fatura']] = r; tituloDaFatura[r['fatura']] = p.titulo; }
+        });
+      } else throw new Error('Não reconheci o arquivo ' + arquivo.name);
+    }
+    if (!etiquetas.length) throw new Error('Faltou o arquivo de Etiquetas');
+    if (!temEmbalagem) throw new Error('Faltou o arquivo PlanilhaEmbalagem');
 
-  // Reserva para navegadores sem BarcodeDetector (ex.: iPhone, Chrome no Windows)
-  async function iniciarZXing(fluxo) {
-    if (!window.ZXing) await carregarScript('https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js');
-    const dicas = new Map();
-    dicas.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.DATA_MATRIX]);
-    const leitor = new ZXing.BrowserMultiFormatReader(dicas);
-    await leitor.decodeFromStream(fluxo, video, function (resultado) {
-      if (resultado) aoLer(resultado.getText());
+    const cargas = {};
+    etiquetas.forEach(function (r) {
+      const op = r['id ordem de producao'];
+      if (!op || !r['codigo de barras']) return;
+      const p = porFatura[r['pedido']] || {};
+      const carga = cargas[op] = cargas[op] || { op: op, titulo: '', linhas: [] };
+      if (!carga.titulo && tituloDaFatura[r['pedido']]) carga.titulo = tituloDaFatura[r['pedido']];
+      carga.linhas.push({
+        seq: r['sequencia'], lote: r['id lote'], codigo: r['codigo de barras'], sorter: r['codigo de barras sorter'],
+        pedido: r['pedido'], transp: r['nome transportadora'] || p['transportadora'] || '',
+        brinde: p['brinde'] || '', livros: p['livros'] || '', extra: p['produto extra'] || ''
+      });
     });
-    lacoAtivo = true;
-    status('Aponte para o DataMatrix (modo compatibilidade, mais lento)', '');
+    return Object.keys(cargas).map(function (op) { return cargas[op]; });
   }
 
-  const DICAS = {
-    NotAllowedError: 'permissão negada pelo navegador ou pelo sistema',
-    NotFoundError: 'nenhuma câmera encontrada neste aparelho',
-    NotReadableError: 'câmera em uso por outro programa',
-    OverconstrainedError: 'a câmera não atende à resolução pedida'
+  /** Grava a OP: o plano (ops/{op}) e o registro de leituras vazio (marcas/{op}). */
+  async function carregarOP(carga) {
+    const op = idOP(carga.op);
+    const linhas = carga.linhas.filter(function (l) { return String(l.codigo || '').trim() && !isNaN(Number(l.seq)); })
+      .sort(function (a, b) { return Number(a.seq) - Number(b.seq); });
+    if (!linhas.length) throw new Error('A OP ' + op + ' não tem etiquetas válidas');
+    const kits = [], indiceKit = {};
+    const etiquetas = linhas.map(function (l) {
+      const chave = [l.brinde, l.livros, l.extra].join(' | ');
+      if (!(chave in indiceKit)) { indiceKit[chave] = kits.length; kits.push({ brinde: l.brinde, livros: l.livros, extra: l.extra }); }
+      return { s: Number(l.seq), c: String(l.codigo).trim(), x: String(l.sorter || '').trim(), k: indiceKit[chave],
+        t: l.transp || '', p: l.pedido || '', l: l.lote || '' };
+    });
+    const plano = { op: op, titulo: carga.titulo || '', total: etiquetas.length, kits: kits, etiquetas: etiquetas,
+      carregadaEm: Date.now(), carregadaPor: usuario.email };
+    if (JSON.stringify(plano).length > 700000) throw new Error('A OP ' + op + ' é grande demais (' + etiquetas.length + ' etiquetas)');
+
+    const existente = await getDoc(refMarcas(op));
+    if (existente.exists() && !carga.substituir) {
+      return { status: 'existe', lidas: Object.keys(existente.data().m || {}).length };
+    }
+    const b = writeBatch(db);
+    b.set(refOP(op), plano);
+    b.set(refMarcas(op), { op: op, m: {}, log: [], ult: 0, pos: null, alerta: null });
+    await b.commit();
+    return { status: 'ok' };
+  }
+
+  $('enviarArquivos').onclick = async function () {
+    const arquivos = Array.from($('arquivos').files);
+    if (arquivos.length < 2) { faixa('msgInicio', 'Selecione os arquivos de Etiquetas e de Embalagem juntos (segure Ctrl ao clicar).', 'aviso'); return; }
+    try {
+      const cargas = await prepararOPs(arquivos);
+      const feitas = [];
+      for (let n = 0; n < cargas.length; n++) {
+        const carga = cargas[n];
+        faixa('msgInicio', 'Carregando a OP ' + carga.op + ' (' + (n + 1) + ' de ' + cargas.length + ')…', '');
+        const r = await carregarOP(carga);
+        if (r.status === 'existe') {
+          const pergunta = 'A OP ' + carga.op + ' já está carregada' + (r.lidas ? ', com ' + r.lidas + ' etiqueta(s) lida(s)' : '') +
+            '. Substituir apaga essas marcações. Substituir?';
+          if (confirm(pergunta)) { carga.substituir = true; await carregarOP(carga); }
+        }
+        feitas.push(carga.op);
+      }
+      $('campoOP').value = feitas.join(', ');
+      faixa('msgInicio', 'Arquivos carregados. Confira a ordem das OPs no campo "Abrir OPs" e clique em Abrir.', '');
+      listar();
+    } catch (e) { faixa('msgInicio', 'Não carregou: ' + textoErro(e), 'erro'); }
   };
 
-  async function iniciar() {
-    if (lacoAtivo) return;
-    let modo = 'pedido da câmera';
-    try {
-      if (!navigator.mediaDevices) throw new Error('esta página precisa ser aberta por HTTPS');
-      status('Iniciando câmera…', '');
-      const fluxo = await navigator.mediaDevices.getUserMedia(CAMERA);
-      let nativo = false;
-      if ('BarcodeDetector' in window) {
-        const formatos = await BarcodeDetector.getSupportedFormats();
-        nativo = formatos.indexOf('data_matrix') !== -1;
-      }
-      modo = nativo ? 'nativo' : 'ZXing';
-      if (nativo) await iniciarNativo(fluxo); else await iniciarZXing(fluxo);
-      document.getElementById('ligar').style.display = 'none';
-      manterTelaLigada();
-    } catch (e) {
-      const nome = (e && e.name) || 'Erro';
-      status('Câmera não abriu [' + nome + ' / modo ' + modo + ']: ' +
-        ((e && e.message) || e) + (DICAS[nome] ? ' — ' + DICAS[nome] : ''), 'erro');
+  // ---------- Sessão (plano completo na memória deste computador) ----------
+  async function abrirSessao(ops) {
+    ops = ops.map(idOP);
+    const planos = await Promise.all(ops.map(function (op) { return getDoc(refOP(op)); }));
+    planos.forEach(function (p, i) { if (!p.exists()) throw new Error('A OP ' + ops[i] + ' não está na base. Carregue os arquivos dela.'); });
+    const marcas = await Promise.all(ops.map(function (op) { return getDoc(refMarcas(op)); }));
+    montarSessao(ops, planos.map(function (p) { return p.data(); }));
+    const docs = {};
+    marcas.forEach(function (m, i) { docs[ops[i]] = m.exists() ? m.data() : {}; aplicarMarcas(ops[i], docs[ops[i]]); });
+    aplicarPosicao(docs);
+  }
+
+  function montarSessao(ops, planos) {
+    const itens = [], porValor = {}, blocos = [], kits = [], idxKit = {}, opInicio = {}, totalOP = {};
+    planos.forEach(function (pl, n) {
+      const op = ops[n];
+      opInicio[op] = itens.length;
+      totalOP[op] = pl.etiquetas.length;
+      pl.etiquetas.forEach(function (e, i) {
+        const k = pl.kits[e.k] || {};
+        const chave = [k.brinde, k.livros, k.extra].join(' | ');
+        if (!(chave in idxKit)) { idxKit[chave] = kits.length; kits.push(k); }
+        const item = { op: op, linha: i, seq: e.s, codigo: String(e.c), sorter: String(e.x || ''), kit: idxKit[chave], lido: false, transp: e.t || '' };
+        const ant = itens[itens.length - 1];
+        if (!ant || ant.op !== item.op || ant.kit !== item.kit) {
+          blocos.push({ op: op, kit: item.kit, inicio: itens.length, qtd: 0, novaOP: !!ant && ant.op !== op });
+        }
+        item.bloco = blocos.length - 1;
+        blocos[item.bloco].qtd++;
+        // Maiúsculas: o Caps Lock ligado inverte as letras que o leitor "digita"
+        porValor[item.codigo.toUpperCase()] = itens.length;
+        if (item.sorter) porValor[item.sorter.toUpperCase()] = itens.length;
+        itens.push(item);
+      });
+    });
+    S = { ops: ops, chave: ops.join('+'), itens: itens, blocos: blocos, kits: kits, porValor: porValor,
+      totalOP: totalOP, opInicio: opInicio, p: -1, lidas: 0, alerta: null, posMudou: false, opInformada: null };
+  }
+
+  /** Marca as etiquetas da OP conforme o registro do Firebase. */
+  function aplicarMarcas(op, dados) {
+    const m = (dados && dados.m) || {};
+    const ini = S.opInicio[op];
+    for (let i = ini; i < ini + S.totalOP[op]; i++) S.itens[i].lido = !!m[S.itens[i].linha];
+    S.lidas = S.itens.filter(function (it) { return it.lido; }).length;
+  }
+
+  /** Posição: a gravada mais recentemente entre as OPs da sessão; sem nenhuma, a última etiqueta marcada. */
+  function aplicarPosicao(docs) {
+    let melhor = null, opMelhor = null;
+    Object.keys(docs).forEach(function (op) {
+      const pos = docs[op] && docs[op].pos;
+      if (pos && typeof pos.i === 'number' && (!melhor || pos.t > melhor.t)) { melhor = pos; opMelhor = op; }
+    });
+    if (melhor && melhor.i >= 0 && melhor.i < S.totalOP[opMelhor]) {
+      S.p = S.opInicio[opMelhor] + melhor.i;
+      S.alerta = docs[opMelhor].alerta || null;
+    } else {
+      S.p = -1;
+      for (let i = S.itens.length - 1; i >= 0; i--) { if (S.itens[i].lido) { S.p = i; break; } }
+      S.alerta = null;
     }
   }
-  document.getElementById('ligar').onclick = iniciar;
 
-  // ---------- Início ----------
-  carregarFila();
-  placar();
-  try { sessao = JSON.parse(localStorage.getItem(CHAVE_SESSAO)); } catch (e) { sessao = null; }
-  if (sessao && sessao.sessao && sessao.expira > Date.now()) {
-    mostrarLeitor();
-  } else {
-    sessao = null;
+  function indiceDe(op, linha) {
+    const ini = S.opInicio[op];
+    return ini === undefined || linha === undefined ? -1 : ini + Number(linha);
   }
-  prepararLogin();
+
+  function partes(texto) {
+    return String(texto || '').split('//').map(function (t) { return t.trim(); }).filter(Boolean);
+  }
+  /** "BOLSA DO LUI : 1" -> "1× BOLSA DO LUI" */
+  function comQuantidade(texto) {
+    const m = /^(.*\S)\s*:\s*(\d+)$/.exec(texto);
+    return m ? m[2] + '× ' + m[1] : texto;
+  }
+  /** Um texto por produto do kit; cada um vira uma linha na tela. */
+  function produtosDe(kit) {
+    const lista = [];
+    partes(kit.brinde).forEach(function (b) { lista.push(comQuantidade(b)); });
+    partes(kit.livros).forEach(function (l) { lista.push(comQuantidade(l)); });
+    partes(kit.extra).forEach(function (x) { lista.push('Extra: ' + comQuantidade(x)); });
+    return lista.length ? lista : ['(sem produto na planilha de embalagem)'];
+  }
+  function semProduto(kit) { return !kit.brinde && !kit.livros && !kit.extra; }
+
+  // ---------- PC 1: início ----------
+  async function listar() {
+    try {
+      const s = await getDocs(query(collection(db, 'ops'), orderBy('carregadaEm', 'desc'), limit(15)));
+      const lista = s.docs.map(function (d) { return d.id; });
+      $('opsCarregadas').textContent = lista.length ? 'Últimas OPs carregadas: ' + lista.join(', ') : 'Nenhuma OP carregada ainda.';
+    } catch (e) { faixa('msgInicio', 'Não consegui ler o Firebase: ' + textoErro(e), 'erro'); }
+    try {
+      const s = await getDoc(refSessao);
+      ativa = s.exists() ? s.data() : null;
+      $('cartaoAtiva').style.display = ativa ? 'block' : 'none';
+      if (ativa) {
+        $('ativaTexto').textContent = nomeSessao(ativa.ops) + (ativa.usuario ? ' · ' + ativa.usuario : '') +
+          ' · iniciada às ' + new Date(ativa.desde).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+          ' de ' + new Date(ativa.desde).toLocaleDateString();
+      }
+    } catch (e) {}
+  }
+
+  function abrir(ops, depois) {
+    faixa('msgInicio', 'Abrindo…', '');
+    abrirSessao(ops).then(function () { faixa('msgInicio', '', ''); depois(); })
+      .catch(function (e) { faixa('msgInicio', textoErro(e), 'erro'); });
+  }
+  $('abrirOP').onclick = function () {
+    const ops = $('campoOP').value.split(/[,;\s]+/).map(function (t) { return t.trim(); }).filter(Boolean);
+    if (ops.length) abrir(ops, abrirConferencia);
+  };
+  $('campoOP').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('abrirOP').click(); });
+  $('continuarAtiva').onclick = function () { if (ativa) abrir(ativa.ops, entrarLeitura); };
+  $('encerrarAtiva').onclick = function () {
+    this.blur();
+    if (!confirm('Encerrar a leitura em andamento? As etiquetas já lidas continuam gravadas.')) return;
+    deleteDoc(refSessao).then(listar).catch(function (e) { faixa('msgInicio', textoErro(e), 'erro'); });
+  };
+
+  // ---------- Conferência ----------
+  function abrirConferencia() {
+    modo = null;
+    $('confTitulo').textContent = nomeSessao(S.ops);
+    $('confTotal').textContent = S.itens.length;
+    $('confLidas').textContent = S.lidas;
+    $('confBlocos').textContent = S.blocos.length;
+    $('confSem').textContent = S.itens.filter(function (it) { return semProduto(S.kits[it.kit]); }).length;
+
+    const t = $('confTabela'); t.innerHTML = '';
+    const cab = el('tr');
+    ['Bloco', 'OP', 'Kits', 'Produtos'].forEach(function (n) { cab.appendChild(el('th', '', n)); });
+    t.appendChild(cab);
+    S.blocos.forEach(function (b, i) {
+      const tr = el('tr', b.novaOP ? 'novaOP' : '');
+      tr.appendChild(el('td', '', i + 1)); tr.appendChild(el('td', '', b.op)); tr.appendChild(el('td', '', b.qtd));
+      const td = el('td');
+      produtosDe(S.kits[b.kit]).forEach(function (p) { td.appendChild(el('div', '', p)); });
+      tr.appendChild(td); t.appendChild(tr);
+    });
+    const cont = {};
+    S.itens.forEach(function (it) { cont[it.transp] = (cont[it.transp] || 0) + 1; });
+    const tt = $('confTransp'); tt.innerHTML = '';
+    Object.keys(cont).forEach(function (n) {
+      const tr = el('tr'); tr.appendChild(el('td', '', cont[n])); tr.appendChild(el('td', '', n)); tt.appendChild(tr);
+    });
+    mostrar('telaConferencia');
+    $('topoTexto').textContent = nomeSessao(S.ops);
+  }
+  $('modoLeitura').onclick = entrarLeitura;
+
+  // ---------- PC 1: leitura ----------
+  function entrarLeitura() {
+    modo = 'leitura';
+    bip(880);              // também libera o som do navegador para os alarmes
+    // Avisa o PC 2 (mantém o horário de início se for a mesma sessão)
+    const mesma = ativa && ativa.ops && ativa.ops.join('+') === S.chave;
+    setDoc(refSessao, { ops: S.ops, totais: S.totalOP, usuario: usuario.email,
+      desde: mesma ? ativa.desde : Date.now(), atual: S.itens[S.p] ? S.itens[S.p].op : S.ops[0] }).catch(function () {});
+    // Leituras que ainda não tinham sido confirmadas pelo Firebase voltam para a memória
+    buffer = lerLocal('buffer_' + S.chave, []);
+    emVoo.clear(); erroGravacao = '';
+    buffer.forEach(function (ev) {
+      if (!MARCA[ev.tipo]) return;
+      const i = indiceDe(ev.op, ev.linha);
+      if (i < 0 || i >= S.itens.length) return;
+      if (!S.itens[i].lido) { S.itens[i].lido = true; S.lidas++; }
+      if (ev.tipo === 'ok' || ev.tipo === 'fora') S.p = i;
+    });
+    if (buffer.length) S.posMudou = true;
+    const ativo = document.hasFocus();
+    sinal(ativo ? '' : 'aviso', ativo ? 'PRONTO' : 'CLIQUE AQUI',
+      ativo ? 'Passe a etiqueta no leitor' : 'A página precisa estar ativa para receber o leitor');
+    desenharLeitura();
+    mostrar('telaLeitura');
+    $('topoTexto').textContent = nomeSessao(S.ops) + ' · leitura';
+  }
+
+  function sinal(classe, titulo, detalhe) {
+    $('sinal').className = classe || '';
+    $('sinalTitulo').textContent = titulo;
+    $('sinalDetalhe').textContent = detalhe || '';
+  }
+  function rotuloItem(it, comOP) { return (comOP ? 'OP ' + it.op + ' · ' : '') + 'seq ' + it.seq; }
+
+  function desenharLeitura() {
+    const prox = S.itens[S.p + 1] || null;
+    const ref = prox || S.itens[S.p] || S.itens[0];
+    const lidasOP = S.itens.filter(function (it) { return it.op === ref.op && it.lido; }).length;
+    $('contLidas').textContent = lidasOP;
+    $('contTotal').textContent = S.totalOP[ref.op];
+    $('contadorRotulo').textContent = 'OP ' + ref.op +
+      (S.ops.length > 1 ? ' (' + (S.ops.indexOf(ref.op) + 1) + 'ª de ' + S.ops.length + ') · total ' + S.lidas + ' de ' + S.itens.length : '');
+    $('proxima').textContent = prox ? 'Próxima: ' + rotuloItem(prox, S.ops.length > 1) : 'Fim do rolo';
+    mostrarGravacao();
+    desenharPendentes();
+    desenharHoje();
+    verificarFimOP('avisoFimLeitura');
+  }
+
+  /** Situação da gravação, embaixo do contador. */
+  function mostrarGravacao() {
+    const g = $('gravacao'), n = buffer.length;
+    g.style.color = '';
+    if (!n) { g.textContent = 'Tudo gravado no Firebase'; return; }
+    if (!navigator.onLine) {
+      g.textContent = 'Sem internet: ' + n + ' leitura(s) guardada(s) neste computador. Gravam sozinhas quando a conexão voltar.';
+      g.style.color = 'var(--laranja)';
+    } else if (erroGravacao) {
+      g.textContent = 'Erro ao gravar (' + erroGravacao + '). Tentando de novo… ' + n + ' na fila';
+      g.style.color = 'var(--vermelho)';
+    } else g.textContent = 'Gravando… ' + n + ' na fila';
+  }
+  window.addEventListener('online', function () { if (modo === 'leitura') mostrarGravacao(); });
+  window.addEventListener('offline', function () { if (modo === 'leitura') mostrarGravacao(); });
+
+  /** Índice da etiqueta seguinte à última lida da OP (ou a primeira dela, se nada foi lido). */
+  function continuacao(op) {
+    let ultima = -1, primeira = -1;
+    for (let k = 0; k < S.itens.length; k++) {
+      if (S.itens[k].op !== op) continue;
+      if (primeira < 0) primeira = k;
+      if (S.itens[k].lido) ultima = k;
+    }
+    return ultima >= 0 ? ultima + 1 : primeira;
+  }
+  /** Etiquetas que ficaram para trás: não bipadas e antes da última lida da própria OP. */
+  function pendentes() {
+    const cont = {};
+    S.ops.forEach(function (op) { cont[op] = continuacao(op); });
+    const lista = [];
+    S.itens.forEach(function (it, i) { if (!it.lido && i < cont[it.op]) lista.push(i); });
+    return lista;
+  }
+  function desenharPendentes() {
+    const lista = pendentes();
+    $('pendentes').style.display = lista.length ? 'block' : 'none';
+    if (!lista.length) return;
+    $('tituloPendentes').textContent = 'Etiquetas não bipadas (' + lista.length + ')';
+    const alvo = $('listaPendentes'); alvo.innerHTML = '';
+    lista.slice(0, MAX_PENDENTES_NA_TELA).forEach(function (i) {
+      const it = S.itens[i];
+      const linha = el('div', 'pendente');
+      linha.appendChild(el('span', '', 'OP ' + it.op + ' · seq ' + it.seq + ' · ' + it.codigo));
+      const b = el('button', '', 'Lançar manualmente');
+      b.onclick = function () { b.blur(); lancar([i]); };
+      linha.appendChild(b); alvo.appendChild(linha);
+    });
+    if (lista.length > MAX_PENDENTES_NA_TELA) alvo.appendChild(el('div', 'rotulo', '+ ' + (lista.length - MAX_PENDENTES_NA_TELA) + ' não mostradas'));
+  }
+
+  function guardarBuffer() { if (S) gravarLocal('buffer_' + S.chave, buffer); }
+
+  /** Marca etiquetas como produzidas sem bipar ("Lançada manualmente"). */
+  function lancar(indices) {
+    indices.forEach(function (i) {
+      const it = S.itens[i];
+      if (it.lido) return;
+      it.lido = true; S.lidas++; diaPendente++;
+      buffer.push({ id: novoId(), tipo: 'manual', op: it.op, seq: it.seq, linha: it.linha, valor: it.codigo,
+        detalhe: 'Lançada manualmente', lidoEm: new Date().toISOString() });
+    });
+    guardarBuffer();
+    sinal('aviso', 'LANÇADA', indices.length === 1 ? rotuloItem(S.itens[indices[0]], S.ops.length > 1) : indices.length + ' etiquetas');
+    desenharLeitura();
+  }
+  $('lancarTodas').onclick = function () {
+    this.blur();
+    const lista = pendentes();
+    if (lista.length && confirm('Lançar manualmente as ' + lista.length + ' etiquetas não bipadas?')) lancar(lista);
+  };
+
+  /** Confere uma leitura na hora, sem esperar o Firebase. */
+  function conferir(valor) {
+    const multi = S.ops.length > 1;
+    let i = S.porValor[valor.toUpperCase()];
+    if (i === undefined && valor.length > 30) {
+      // DataMatrix longo (ex.: Correios) que contém o código de rastreio no meio
+      for (let k = 0; k < S.itens.length; k++) { if (valor.indexOf(S.itens[k].codigo) !== -1) { i = k; break; } }
+    }
+    if (i !== undefined && i === S.p) return;                 // o outro DataMatrix da mesma etiqueta
+
+    const ev = { id: novoId(), valor: valor, lidoEm: new Date().toISOString() };
+    const anterior = S.itens[S.p] || null;
+    const esperado = S.itens[S.p + 1] || null;
+
+    if (i === undefined) {
+      ev.tipo = 'desconhecida'; ev.titulo = 'ETIQUETA DE OUTRA OP'; ev.detalhe = valor.substring(0, 30);
+    } else {
+      const it = S.itens[i];
+      ev.op = it.op; ev.seq = it.seq; ev.linha = it.linha;
+      if (it.lido) {
+        ev.tipo = 'repetida'; ev.titulo = 'ETIQUETA REPETIDA'; ev.detalhe = rotuloItem(it, multi) + ' já foi lida';
+      } else {
+        // Cada OP tem o seu ponto de continuação: a etiqueta seguinte à última lida dela
+        const cont = continuacao(it.op);
+        const jaTinhaLeitura = S.itens.some(function (x) { return x.op === it.op && x.lido; });
+        it.lido = true; S.lidas++; diaPendente++;
+        if (i < cont) {
+          ev.tipo = 'tardia'; ev.detalhe = rotuloItem(it, multi) + ' estava pendente';
+        } else if (i === S.p + 1 || i === cont) {
+          S.p = i; ev.tipo = 'ok'; ev.retorno = jaTinhaLeitura;
+        } else {
+          S.p = i; ev.tipo = 'fora'; ev.titulo = 'FORA DE ORDEM';
+          ev.detalhe = 'Esperada ' + (esperado ? rotuloItem(esperado, multi) : 'nenhuma (fim)') + ' · lida ' + rotuloItem(it, multi);
+        }
+      }
+    }
+
+    if (ev.tipo === 'ok') {
+      S.alerta = null;
+      const it = S.itens[i];
+      if (anterior && anterior.op !== it.op) { sinal('troca', (ev.retorno ? 'DE VOLTA À OP ' : 'NOVA OP ') + it.op, 'Seq ' + it.seq + ' OK'); bip(1200, 3); }
+      else { sinal('ok', 'OK', 'Seq ' + it.seq); bip(880); }
+    } else if (ev.tipo === 'tardia') {
+      sinal('aviso', 'RECUPERADA', ev.detalhe); bip(660, 2);
+    } else {
+      S.alerta = { id: ev.id, titulo: ev.titulo, detalhe: ev.detalhe };
+      sinal('erro', ev.titulo, ev.detalhe); bip(220, 3);
+    }
+    S.posMudou = true;
+    buffer.push(ev);
+    guardarBuffer();
+    desenharLeitura();
+  }
+
+  let teclado = '', ultimaTecla = 0, ultimoValor = '', ultimoValorEm = 0;
+  document.addEventListener('keydown', function (e) {
+    if (modo !== 'leitura' || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.target && e.target.tagName === 'INPUT') return;      // digitando num campo, não é o leitor
+    const agora = Date.now();
+    if (agora - ultimaTecla > 500) teclado = '';   // digitação lenta não é do leitor
+    ultimaTecla = agora;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const valor = teclado.trim(); teclado = '';
+      if (!valor) return;
+      if (valor === ultimoValor && agora - ultimoValorEm < 3000) return;   // mesma etiqueta parada na frente do leitor
+      ultimoValor = valor; ultimoValorEm = agora;
+      conferir(valor);
+    } else if (e.key.length === 1) {
+      teclado += e.key;
+      if (e.key === ' ') e.preventDefault();
+    }
+  });
+  window.addEventListener('focus', function () { if (modo === 'leitura') sinal('', 'PRONTO', 'Passe a etiqueta no leitor'); });
+  window.addEventListener('blur', function () {
+    if (modo === 'leitura') { sinal('erro', 'LEITOR INATIVO', 'Clique nesta página para voltar a ler'); bip(220); }
+  });
+  document.addEventListener('click', function () { window.focus(); });
+
+  /** Registro compacto para o histórico (mesmo conteúdo a cada reenvio, para não duplicar). */
+  function registroLog(ev) {
+    return { id: ev.id, t: Date.parse(ev.lidoEm) || Date.now(), tp: ev.tipo, o: ev.op || '', s: ev.seq === undefined ? '' : ev.seq,
+      v: String(ev.valor || '').substring(0, 80), d: String(ev.detalhe || '').substring(0, 100), u: usuario.email };
+  }
+
+  /**
+   * Grava no Firebase, em um pacote, as leituras acumuladas e a posição atual.
+   * Uma gravação por OP tocada (normalmente uma só), independentemente de quantas etiquetas foram lidas.
+   * A leitura só sai do "buffer" quando o Firebase confirma; um reenvio não duplica nada.
+   */
+  function gravarPacote() {
+    if (modo !== 'leitura' || !S || !usuario) return;
+    const lote = buffer.filter(function (ev) { return !emVoo.has(ev.id); });
+    if (!lote.length && !S.posMudou) return;
+    S.posMudou = false;
+
+    const itAtual = S.itens[S.p];
+    const atual = itAtual ? itAtual.op : S.ops[0];
+    const porOP = {}; porOP[atual] = [];
+    lote.forEach(function (ev) {
+      const op = ev.op && S.opInicio[ev.op] !== undefined ? ev.op : atual;
+      (porOP[op] = porOP[op] || []).push(ev);
+    });
+    const agora = Date.now();
+    const b = writeBatch(db);
+    Object.keys(porOP).forEach(function (op) {
+      const evs = porOP[op];
+      const upd = { ult: agora };
+      evs.forEach(function (ev) {
+        if (MARCA[ev.tipo]) upd['m.' + ev.linha] = [ev.tipo, Date.parse(ev.lidoEm) || agora, usuario.email];
+      });
+      if (evs.length) upd.log = arrayUnion.apply(null, evs.map(registroLog));
+      if (op === atual) {
+        upd.pos = itAtual ? { i: itAtual.linha, t: agora } : null;
+        upd.alerta = S.alerta || null;
+      }
+      b.update(refMarcas(op), upd);
+    });
+    if (S.opInformada !== atual) { b.set(refSessao, { atual: atual }, { merge: true }); S.opInformada = atual; }
+
+    lote.forEach(function (ev) { emVoo.add(ev.id); });
+    const chave = S.chave;
+    b.commit().then(function () {
+      const ids = new Set(lote.map(function (ev) { return ev.id; }));
+      lote.forEach(function (ev) { emVoo.delete(ev.id); });
+      if (!S || S.chave !== chave) { gravarLocal('buffer_' + chave, lerLocal('buffer_' + chave, []).filter(function (ev) { return !ids.has(ev.id); })); return; }
+      buffer = buffer.filter(function (ev) { return !ids.has(ev.id); });
+      guardarBuffer();
+      erroGravacao = '';
+      if (modo === 'leitura') mostrarGravacao();
+    }).catch(function (e) {
+      lote.forEach(function (ev) { emVoo.delete(ev.id); });
+      if (!S || S.chave !== chave) return;
+      S.posMudou = true;
+      if (e && e.code === 'not-found') {
+        // A OP saiu da base (reset ou substituída): descarta as leituras dela e volta ao início
+        buffer = []; guardarBuffer();
+        definirPapel('pc1');
+        faixa('msgInicio', 'A OP desta leitura não está mais na base. Carregue os arquivos de novo.', 'aviso');
+        return;
+      }
+      erroGravacao = textoErro(e);
+      if (modo === 'leitura') mostrarGravacao();
+    });
+    if (modo === 'leitura') mostrarGravacao();
+  }
+  setInterval(gravarPacote, INTERVALO_GRAVACAO_MS);
+  // Antes de fechar a página, tenta gravar o que estiver pendente (o resto fica guardado no computador)
+  window.addEventListener('pagehide', function () { gravarPacote(); gravarDia(); });
+
+  // ---------- Alerta de fim de OP ----------
+  /** Quantas etiquetas faltam no rolo da OP, contando a partir da próxima (as de uma OP ficam juntas). */
+  function restamNaOP(idx) {
+    const op = S.itens[idx].op;
+    let n = 0;
+    for (let k = idx; k < S.itens.length && S.itens[k].op === op; k++) n++;
+    return n;
+  }
+  function verificarFimOP(id) {
+    const e = $(id);
+    const prox = S && S.itens[S.p + 1];
+    const n = prox ? restamNaOP(S.p + 1) : 0;
+    if (!prox || n > AVISO_FIM_OP) { e.style.display = 'none'; return; }
+    e.style.display = 'block';
+    e.textContent = 'Faltam ' + n + (n === 1 ? ' etiqueta' : ' etiquetas') + ' para acabar a OP ' + prox.op;
+    const chave = S.chave + '|' + prox.op;
+    if (!avisadosFim[chave]) { avisadosFim[chave] = true; somFimOP(); }
+  }
+
+  // ---------- PC 2: acompanha o PC 1 em tempo real ----------
+  function pararPC2() {
+    if (pararSessao) { pararSessao(); pararSessao = null; }
+    pararMarcas.forEach(function (f) { f(); }); pararMarcas = [];
+    chaveSeguida = null;
+  }
+
+  function seguirSessao() {
+    if (pararSessao) return;
+    pararSessao = onSnapshot(refSessao, function (s) {
+      ativa = s.exists() ? s.data() : null;
+      if (modo === 'ops') desenharOPs();
+      if (modo === 'produto') sessaoMudou();
+    }, function (e) { $('infoOPs').textContent = 'Sem conexão com o Firebase: ' + textoErro(e); });
+  }
+
+  function desenharOPs() {
+    const alvo = $('botoesOPs'); alvo.innerHTML = '';
+    if (!ativa || !ativa.ops) { $('infoOPs').textContent = 'Aguardando o PC 1 abrir uma OP…'; return; }
+    const lendo = ativa.atual || ativa.ops[0];
+    $('infoOPs').textContent = (ativa.usuario ? ativa.usuario + ' · ' : '') + 'iniciada às ' +
+      new Date(ativa.desde).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    ativa.ops.forEach(function (op) {
+      const b = el('button', 'grandao' + (op === lendo ? ' lendo' : ''), 'OP ' + op);
+      const total = ativa.totais && ativa.totais[op];
+      if (total) b.appendChild(el('small', '', total + ' kits'));
+      if (op === lendo) b.appendChild(el('span', 'marca', 'LENDO AGORA'));
+      b.onclick = entrarProduto;
+      alvo.appendChild(b);
+    });
+  }
+
+  function entrarProduto() {
+    modo = 'produto'; blocoVisto = -1; alertaVisto = null; chaveSeguida = null;
+    bip(880);
+    mostrar('telaProduto');
+    S = null; desenharProdutos();
+    sessaoMudou();
+  }
+
+  /** Carrega o plano da sessão do PC 1 e passa a ouvir as leituras de cada OP dela. */
+  async function sessaoMudou() {
+    const chave = ativa && ativa.ops ? ativa.ops.join('+') : null;
+    if (chave === chaveSeguida) return;
+    pararMarcas.forEach(function (f) { f(); }); pararMarcas = [];
+    chaveSeguida = chave; S = null; blocoVisto = -1;
+    if (!chave) { desenharProdutos(); return; }
+    try {
+      const ops = ativa.ops.slice();
+      const planos = await Promise.all(ops.map(function (op) { return getDoc(refOP(op)); }));
+      if (chaveSeguida !== chave) return;
+      if (planos.some(function (p) { return !p.exists(); })) {
+        $('esperaProduto').textContent = 'A OP em andamento não está mais na base. Aguardando o PC 1…';
+        return;
+      }
+      montarSessao(ops, planos.map(function (p) { return p.data(); }));
+      const docs = {};
+      pararMarcas = ops.map(function (op) {
+        return onSnapshot(refMarcas(op), function (s) {
+          if (chaveSeguida !== chave || !S) return;
+          docs[op] = s.exists() ? s.data() : {};
+          aplicarMarcas(op, docs[op]);
+          aplicarPosicao(docs);
+          desenharProdutos();
+        }, function (e) { $('rodapeProduto').textContent = 'Sem conexão com o Firebase: ' + textoErro(e); });
+      });
+      desenharProdutos();
+    } catch (e) {
+      $('esperaProduto').textContent = 'Não consegui abrir a OP do PC 1: ' + textoErro(e);
+    }
+  }
+
+  function desenharProdutos() {
+    $('esperaProduto').style.display = S ? 'none' : 'block';
+    $('painelProduto').style.display = S ? 'block' : 'none';
+    if (!S) { $('topoTexto').textContent = 'produtos'; if (!chaveSeguida) $('esperaProduto').textContent = 'Aguardando o computador da leitura abrir uma OP…'; return; }
+    $('topoTexto').textContent = nomeSessao(S.ops) + ' · produtos';
+    verificarFimOP('avisoFimProduto');
+
+    const prox = S.itens[S.p + 1] || null;
+    const agora = Date.now();
+    const caixa = $('agoraProdutos'); caixa.innerHTML = '';
+    if (!prox) {
+      caixa.appendChild(el('div', 'produto', 'Fim: todas as etiquetas foram lidas'));
+      $('faltam').textContent = 0; $('faltamDe').textContent = '';
+      $('agora').className = 'caixa'; $('depois').innerHTML = '';
+    } else {
+      const b = S.blocos[prox.bloco];
+      const faltam = b.inicio + b.qtd - (S.p + 1);
+      caixa.appendChild(el('div', 'rotulo', 'Agora · OP ' + b.op));
+      produtosDe(S.kits[b.kit]).forEach(function (p) { caixa.appendChild(el('div', 'produto', p)); });
+      $('faltam').textContent = faltam;
+      $('faltamDe').textContent = 'de ' + b.qtd + ' kits';
+      $('agora').className = 'caixa' + (faltam <= AVISO_ACABANDO ? ' acabando' : '');
+
+      // Troca de bloco: avisa por alguns segundos
+      if (blocoVisto !== -1 && prox.bloco !== blocoVisto) {
+        const ant = S.blocos[blocoVisto];
+        const mesmo = ant && ant.kit === b.kit;
+        faixa('faixaProduto', (b.op !== (ant && ant.op) ? 'NOVA OP ' + b.op + ' — ' : '') + (mesmo ? 'mesmo produto' : 'TROCA DE PRODUTO'), 'aviso');
+        faixaAte = agora + 10000;
+        bip(mesmo ? 1200 : 660, 3);
+      }
+      blocoVisto = prox.bloco;
+
+      const depois = $('depois'); depois.innerHTML = '';
+      let opAtual = b.op;
+      S.blocos.slice(prox.bloco + 1, prox.bloco + 1 + BLOCOS_DEPOIS).forEach(function (d) {
+        if (d.op !== opAtual) { depois.appendChild(el('div', 'divisorOP', 'OP ' + d.op)); opAtual = d.op; }
+        const c = el('div', 'caixa bloco');
+        const q = el('div', 'qtd', d.qtd); q.appendChild(el('small', '', 'kits'));
+        const itens = el('div', 'itens');
+        produtosDe(S.kits[d.kit]).forEach(function (p) { itens.appendChild(el('div', '', p)); });
+        c.appendChild(q); c.appendChild(itens); depois.appendChild(c);
+      });
+      const resto = S.blocos.length - (prox.bloco + 1 + BLOCOS_DEPOIS);
+      if (resto > 0) depois.appendChild(el('div', 'rotulo', '+ ' + resto + ' bloco(s) depois destes'));
+      if (!depois.children.length) depois.appendChild(el('div', 'rotulo', 'Este é o último bloco'));
+    }
+
+    // Erro de leitura no PC 1 tem prioridade sobre o aviso de troca
+    if (S.alerta) {
+      faixa('faixaProduto', 'ATENÇÃO NA LEITURA: ' + S.alerta.titulo, 'erro');
+      if (S.alerta.id !== alertaVisto) bip(220, 3);
+      faixaAte = 0;
+    } else if (agora > faixaAte) {
+      faixa('faixaProduto', '', '');
+    }
+    alertaVisto = S.alerta ? S.alerta.id : null;
+    $('rodapeProduto').textContent = S.lidas + ' de ' + S.itens.length + ' etiquetas lidas · atualizado às ' + new Date().toLocaleTimeString();
+  }
+  // Tira o aviso de troca de bloco depois do tempo, mesmo sem novas leituras
+  setInterval(function () { if (modo === 'produto' && S && faixaAte && Date.now() > faixaAte && !S.alerta) { faixaAte = 0; faixa('faixaProduto', '', ''); } }, 1000);
+
+  // ---------- Produção do dia ----------
+  function abrirJanela(titulo) {
+    $('janelaTitulo').textContent = titulo;
+    $('janelaCorpo').innerHTML = '';
+    $('janela').style.display = 'block';
+    return $('janelaCorpo');
+  }
+  $('fecharJanela').onclick = function () { $('janela').style.display = 'none'; };
+
+  /** Tudo que foi registrado hoje (das OPs gravadas hoje), da mais recente para a mais antiga. */
+  async function registrosDoDia() {
+    const ini = inicioDoDia();
+    const s = await getDocs(query(collection(db, 'marcas'), where('ult', '>=', ini)));
+    const linhas = [];
+    s.forEach(function (d) { (d.data().log || []).forEach(function (r) { if (r.t >= ini) linhas.push(r); }); });
+    linhas.sort(function (a, b) { return b.t - a.t; });
+    return linhas;
+  }
+
+  $('hoje').onclick = async function () {
+    this.blur();
+    const corpo = abrirJanela('Produzido hoje');
+    corpo.appendChild(el('div', 'rotulo', 'Carregando…'));
+    try {
+      const todas = await registrosDoDia();
+      const feitas = todas.filter(function (r) { return MARCA[r.tp]; });
+      const porOP = {}, ordem = [];
+      feitas.slice().reverse().forEach(function (r) { if (!(r.o in porOP)) { porOP[r.o] = 0; ordem.push(r.o); } porOP[r.o]++; });
+      corpo.innerHTML = '';
+      corpo.appendChild(el('div', '', feitas.length + ' kits gravados hoje' + (todas.length > feitas.length ? ' · ' + (todas.length - feitas.length) + ' leitura(s) com divergência' : '') + '.'));
+      const chips = el('div', 'chips');
+      ordem.forEach(function (op) { chips.appendChild(el('span', '', 'OP ' + op + ': ' + porOP[op])); });
+      corpo.appendChild(chips);
+      const baixar = el('button', '', 'Baixar planilha do dia (CSV)');
+      baixar.onclick = function () { baixarCsv(todas); };
+      corpo.appendChild(baixar);
+      const t = el('table'); t.style.marginTop = '12px';
+      const cab = el('tr');
+      ['Hora', 'OP', 'Seq', 'Código', 'Situação', 'Usuário'].forEach(function (n) { cab.appendChild(el('th', '', n)); });
+      t.appendChild(cab);
+      todas.forEach(function (r) {
+        const tr = el('tr');
+        [hora(r.t), r.o, r.s, r.v, SITUACAO[r.tp] || r.tp, r.u].forEach(function (v) { tr.appendChild(el('td', '', v)); });
+        if (!MARCA[r.tp]) tr.style.color = 'var(--vermelho)';
+        t.appendChild(tr);
+      });
+      corpo.appendChild(t);
+    } catch (e) { corpo.innerHTML = ''; corpo.appendChild(el('div', 'faixa erro', textoErro(e))); }
+  };
+
+  /** Arquivo CSV (abre no Excel e no Google Planilhas) com todas as leituras do dia. */
+  function baixarCsv(linhas) {
+    const esc = function (v) { const s = String(v === undefined || v === null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const texto = ['Data;Hora;OP;Sequência;Código lido;Situação;Detalhe;Usuário'].concat(linhas.slice().reverse().map(function (r) {
+      return [new Date(r.t).toLocaleDateString(), hora(r.t), r.o, r.s, r.v, SITUACAO[r.tp] || r.tp, r.d, r.u].map(esc).join(';');
+    })).join('\r\n');
+    const url = URL.createObjectURL(new Blob(['﻿' + texto], { type: 'text/csv;charset=utf-8' }));
+    const a = el('a'); a.href = url; a.download = 'leituras-' + dataHoje() + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+  }
+
+  // ---------- Reset da base ----------
+  async function apagarColecao(nome) {
+    const s = await getDocs(collection(db, nome));
+    let b = writeBatch(db), n = 0;
+    for (const d of s.docs) {
+      b.delete(d.ref);
+      if (++n === 400) { await b.commit(); b = writeBatch(db); n = 0; }
+    }
+    if (n) await b.commit();
+  }
+  $('abrirReset').onclick = function () {
+    this.blur();
+    const corpo = abrirJanela('Resetar a base de dados');
+    corpo.appendChild(el('p', '', 'Apaga todas as OPs carregadas, as marcações de leitura, o histórico e o contador do dia. Não dá para desfazer.'));
+    corpo.appendChild(el('div', 'rotulo', 'Senha de confirmação'));
+    const campo = el('input'); campo.type = 'password'; campo.autocomplete = 'off';
+    campo.style.cssText = 'display:block;margin:6px 0';
+    const botao = el('button', 'perigo principal', 'Apagar tudo');
+    const msg = el('div', 'faixa erro'); msg.style.display = 'none';
+    botao.onclick = async function () {
+      msg.style.display = 'none';
+      if (campo.value !== SENHA_RESET) { msg.style.display = 'block'; msg.textContent = 'Senha incorreta'; return; }
+      botao.disabled = true; botao.textContent = 'Apagando…';
+      try {
+        for (const nome of ['marcas', 'ops', 'dias', 'sessoes']) await apagarColecao(nome);
+        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('buffer_') === 0) localStorage.removeItem(k); }); } catch (e) {}
+        buffer = []; diaPendente = 0;
+        $('janela').style.display = 'none';
+        definirPapel('pc1');
+        faixa('msgInicio', 'Base de dados apagada. Carregue os arquivos das OPs para recomeçar.', '');
+      } catch (e) {
+        botao.disabled = false; botao.textContent = 'Apagar tudo';
+        msg.style.display = 'block'; msg.textContent = textoErro(e);
+      }
+    };
+    corpo.appendChild(campo); corpo.appendChild(botao); corpo.appendChild(msg);
+    campo.focus();
+  };
 </script>
 </body>
 </html>
