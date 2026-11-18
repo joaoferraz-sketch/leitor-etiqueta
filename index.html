@@ -172,6 +172,7 @@
   <div id="telaOPs" class="tela">
     <h1>OPs em leitura no PC 1</h1>
     <div id="infoOPs" class="rotulo"></div>
+    <div id="msgOPs" class="faixa" style="display:none"></div>
     <div class="grade" id="botoesOPs"></div>
   </div>
 
@@ -487,8 +488,9 @@
   // ---------- Escolha do computador ----------
   /** Abre a primeira tela do computador escolhido (pc1, pc2) ou a escolha (null). A escolha fica guardada. */
   function definirPapel(papel) {
-    modo = null; S = null;
+    modo = null; S = null; finalizando = false;
     pararPC2();
+    faixa('msgOPs', '', '');
     gravarLocal('papel', papel);
     if (papel === 'pc1') {
       faixa('msgInicio', '', ''); mostrar('telaInicio');
@@ -851,6 +853,7 @@
     desenharLeitura();
     mostrar('telaLeitura');
     $('topoTexto').textContent = nomeSessao(S.ops) + ' · leitura';
+    verificarFinal();
   }
 
   function sinal(classe, titulo, detalhe) {
@@ -940,6 +943,7 @@
     guardarBuffer();
     sinal('aviso', 'LANÇADA', indices.length === 1 ? rotuloItem(S.itens[indices[0]], S.ops.length > 1) : indices.length + ' etiquetas');
     desenharLeitura();
+    verificarFinal();
   }
   $('lancarTodas').onclick = function () {
     this.blur();
@@ -999,7 +1003,39 @@
     buffer.push(ev);
     guardarBuffer();
     desenharLeitura();
+    verificarFinal();
   }
+
+  // ---------- Fim da sessão: volta para a tela inicial ----------
+  let finalizando = false;
+
+  /**
+   * Todas as etiquetas da sessão marcadas: grava o que falta, encerra a sessão
+   * (o PC 2 volta para a lista de OPs) e volta para a tela inicial do PC 1.
+   * No fim do rolo com etiquetas ainda sem leitura, só avisa e espera.
+   */
+  function verificarFinal() {
+    if (modo !== 'leitura' || !S || finalizando) return;
+    if (S.lidas >= S.itens.length) {
+      finalizando = true;
+      sinal('ok', 'FINALIZADA', nomeSessao(S.ops) + ' · gravando as últimas leituras…');
+      bip(1200, 3);
+      gravarPacote();
+    } else if (!S.itens[S.p + 1]) {
+      const faltam = S.itens.length - S.lidas;
+      sinal('aviso', 'FIM DO ROLO', faltam + (faltam === 1 ? ' etiqueta ainda sem leitura' : ' etiquetas ainda sem leitura') + ': bipe ou lance manualmente');
+    }
+  }
+
+  // Espera o Firebase confirmar tudo antes de sair (sem internet, fica esperando na tela)
+  setInterval(function () {
+    if (!finalizando || modo !== 'leitura' || !S) return;
+    if (buffer.length || emVoo.size) { gravarPacote(); return; }
+    const ops = S.ops;
+    deleteDoc(refSessao).catch(function () {});
+    definirPapel('pc1');
+    faixa('msgInicio', nomeSessao(ops) + ' finalizada: todas as etiquetas gravadas.', '');
+  }, 1000);
 
   let teclado = '', ultimaTecla = 0, ultimoValor = '', ultimoValorEm = 0;
   document.addEventListener('keydown', function (e) {
@@ -1128,7 +1164,16 @@
     pararSessao = onSnapshot(refSessao, function (s) {
       ativa = s.exists() ? s.data() : null;
       if (modo === 'ops') desenharOPs();
-      if (modo === 'produto') sessaoMudou();
+      if (modo === 'produto') {
+        if (!ativa) {
+          // O PC 1 finalizou ou encerrou: volta para a lista de OPs
+          definirPapel('pc2');
+          faixa('msgOPs', 'A leitura foi finalizada no PC 1. Aguardando as próximas OPs.', '');
+          bip(1200, 3);
+          return;
+        }
+        sessaoMudou();
+      }
     }, function (e) { $('infoOPs').textContent = 'Sem conexão com o Firebase: ' + textoErro(e); });
   }
 
