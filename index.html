@@ -186,7 +186,13 @@
       <br><button id="enviarArquivos">Carregar arquivos</button>
     </div>
     <div id="msgInicio" class="faixa" style="display:none"></div>
-    <button class="perigo" id="abrirReset" style="margin-top:24px">Resetar a base de dados</button>
+    <div class="caixa" id="areaAdmin" style="display:none; border-color: var(--vermelho)">
+      <h2 style="margin-top:0">Administração</h2>
+      <div class="rotulo" style="margin-bottom:6px">Excluir uma OP da base (o plano e as leituras dela)</div>
+      <input type="text" id="campoExcluir" autocomplete="off" placeholder="71809">
+      <button class="perigo" id="excluirOP">Excluir OP</button>
+      <br><button class="perigo" id="abrirReset" style="margin-top:18px">Resetar a base de dados</button>
+    </div>
   </div>
 
   <!-- Conferência antes de começar -->
@@ -269,6 +275,9 @@
   };
   const DOMINIO = 'sbxgroup.com';
   const SENHA_RESET = '123456';          // trava contra clique acidental, não é segurança
+  // Quem vê a área de administração. A proteção de verdade está nas regras do Firestore,
+  // que só deixam estas mesmas contas excluir ou substituir OPs.
+  const ADMINS = ['joao.ferraz@sbxgroup.com'];
 
   const INTERVALO_GRAVACAO_MS = 4000;    // o PC 1 grava em pacotes a cada 4 s (cabe na cota gratuita)
   const INTERVALO_DIA_MS = 30000;        // contador do dia a cada 30 s
@@ -342,10 +351,14 @@
   }
   function textoErro(e) {
     const c = e && e.code ? String(e.code) : '';
-    if (c.indexOf('permission-denied') !== -1) return 'sem permissão (entre com a conta @' + DOMINIO + ')';
+    if (c.indexOf('permission-denied') !== -1) {
+      return ehAdmin() ? 'sem permissão (confira as regras do Firestore)'
+        : 'sem permissão: só o administrador pode excluir ou substituir OPs';
+    }
     if (c.indexOf('unavailable') !== -1) return 'sem conexão com o Firebase';
     return (e && e.message) || String(e);
   }
+  function ehAdmin() { return !!usuario && ADMINS.indexOf(String(usuario.email || '').toLowerCase()) !== -1; }
   function nomeSessao(ops) { return (ops.length > 1 ? 'OPs ' : 'OP ') + ops.join(', '); }
   function novoId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
   function idOP(op) {
@@ -425,7 +438,11 @@
     modo = null; S = null;
     pararPC2();
     gravarLocal('papel', papel);
-    if (papel === 'pc1') { faixa('msgInicio', '', ''); mostrar('telaInicio'); listar(); }
+    if (papel === 'pc1') {
+      faixa('msgInicio', '', ''); mostrar('telaInicio');
+      $('areaAdmin').style.display = ehAdmin() ? 'block' : 'none';
+      listar();
+    }
     else if (papel === 'pc2') {
       bip(880);            // libera o som do navegador para os avisos
       modo = 'ops'; $('botoesOPs').innerHTML = ''; $('infoOPs').textContent = 'Atualizando…';
@@ -1242,6 +1259,31 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
   }
+
+  // ---------- Excluir uma OP (só administrador) ----------
+  $('excluirOP').onclick = async function () {
+    this.blur();
+    let op;
+    try { op = idOP($('campoExcluir').value); } catch (e) { faixa('msgInicio', textoErro(e), 'aviso'); return; }
+    try {
+      const marcas = await getDoc(refMarcas(op));
+      const plano = await getDoc(refOP(op));
+      if (!plano.exists() && !marcas.exists()) { faixa('msgInicio', 'A OP ' + op + ' não está na base.', 'aviso'); return; }
+      const lidas = marcas.exists() ? Object.keys(marcas.data().m || {}).length : 0;
+      const total = plano.exists() ? plano.data().total : '?';
+      if (!confirm('Excluir a OP ' + op + ' (' + total + ' etiquetas, ' + lidas + ' lidas)?\n\n' +
+        'Apaga o plano e todo o histórico de leituras dela. Não dá para desfazer.')) return;
+      const b = writeBatch(db);
+      b.delete(refOP(op));
+      b.delete(refMarcas(op));
+      const s = await getDoc(refSessao);
+      if (s.exists() && (s.data().ops || []).indexOf(op) !== -1) b.delete(refSessao);   // a sessão em andamento usava esta OP
+      await b.commit();
+      $('campoExcluir').value = '';
+      faixa('msgInicio', 'OP ' + op + ' excluída.', '');
+      listar();
+    } catch (e) { faixa('msgInicio', 'Não excluiu: ' + textoErro(e), 'erro'); }
+  };
 
   // ---------- Reset da base ----------
   async function apagarColecao(nome) {
